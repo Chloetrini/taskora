@@ -99,7 +99,7 @@ export default function TrashView() {
   const { data: todos, isPending, isError, error, refetch } = useTrash()
 
   return (
-    <PageWrapper>
+    <PageWrapper size="wide">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="font-display text-4xl font-extrabold tracking-[-0.03em]">Trash</h1>
