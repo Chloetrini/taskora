@@ -11,6 +11,10 @@ export interface IUser {
   hasPassword: boolean
   googleId?: string
   bio: string
+  // Profile photo bytes live on the user (select: false) so deleting the
+  // account deletes the photo too. avatarUpdatedAt versions the image URL.
+  avatar?: { data: Buffer; contentType: string } | null
+  avatarUpdatedAt?: Date | null
   // Bumped on password change; sessions carrying an older version are
   // rejected, which signs the user out everywhere else.
   sessionVersion: number
@@ -31,6 +35,8 @@ const userSchema = new Schema<IUser>(
     googleId: { type: String, unique: true, sparse: true, select: false },
     bio: { type: String, trim: true, maxlength: 160, default: '' },
     sessionVersion: { type: Number, default: 0, select: false },
+    avatar: { type: new Schema({ data: Buffer, contentType: String }, { _id: false }), select: false, default: null },
+    avatarUpdatedAt: { type: Date, default: null },
   },
   { timestamps: true }
 )

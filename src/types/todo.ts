@@ -23,6 +23,8 @@ export interface Todo {
   pinned: boolean
   completed: boolean
   completedAt: string | null
+  /** When it was moved to the trash; null for live tasks. */
+  deletedAt: string | null
   createdAt: string
   updatedAt: string
 }

@@ -36,6 +36,19 @@ export class TestClient {
     return res
   }
 
+  /** Sends raw bytes (e.g. an image upload) with the given Content-Type. */
+  async upload(handler: Handler, url: string, bytes: Uint8Array<ArrayBuffer>, contentType: string) {
+    const res = await handler(
+      new NextRequest(`http://localhost${url}`, {
+        method: 'PUT',
+        headers: { 'content-type': contentType, 'x-forwarded-for': '10.0.0.1', ...(this.jar.size ? { cookie: this.cookie } : {}) },
+        body: bytes,
+      }),
+      { params: Promise.resolve({}) }
+    )
+    return { status: res.status, json: (await res.json()) as Json }
+  }
+
   async call(handler: Handler, method: string, url: string, body?: unknown, params: Record<string, string> = {}) {
     const res = await this.raw(handler, method, url, body, params)
     return { status: res.status, json: (await res.json()) as Json, cookieSet: res.cookies.get('taskora_session') }

@@ -11,3 +11,8 @@ export const changePassword = (data: { currentPassword?: string; newPassword: st
 
 /** Password accounts confirm with `password`; Google-only accounts with `confirmUsername`. */
 export const deleteAccount = (confirm: { password?: string; confirmUsername?: string }) => api.delete<undefined>('/users/me', confirm)
+
+/** The image must already be cropped square (see lib/crop-image.ts); the server checks the real type and size. */
+export const uploadAvatar = (image: Blob) => api.upload<User>('/users/me/avatar', image)
+
+export const removeAvatar = () => api.delete<User>('/users/me/avatar')

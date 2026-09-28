@@ -30,9 +30,9 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<ApiResponse<T>> {
+async function request<T>(method: string, path: string, body?: unknown, headers?: Record<string, string>): Promise<ApiResponse<T>> {
   try {
-    const response = await axiosClient.request<ApiResponse<T>>({ method, url: path, data: body })
+    const response = await axiosClient.request<ApiResponse<T>>({ method, url: path, data: body, headers })
     return response.data
   } catch (error) {
     if (axios.isAxiosError(error) && error.response) {
@@ -48,4 +48,6 @@ export const api = {
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body ?? {}),
   patch: <T>(path: string, body: unknown) => request<T>('PATCH', path, body),
   delete: <T>(path: string, body?: unknown) => request<T>('DELETE', path, body),
+  /** Sends a file as the raw request body (not JSON, not multipart). */
+  upload: <T>(path: string, file: Blob) => request<T>('PUT', path, file, { 'Content-Type': file.type || 'application/octet-stream' }),
 }

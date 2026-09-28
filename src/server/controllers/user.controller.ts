@@ -41,7 +41,7 @@ export async function updateProfile(req: NextRequest) {
     throw fieldError(409, 'email', 'An account with this email already exists')
   }
 
-  const user = await User.findByIdAndUpdate(userId, { $set: updates }, { new: true, runValidators: true }).select('+googleId').lean()
+  const user = await User.findByIdAndUpdate(userId, { $set: updates }, { new: true, runValidators: true }).select('+googleId +password').lean()
   if (!user) throw new HttpError(404, 'Account not found')
   if (updates.username) addUsernameToFilter(updates.username)
 

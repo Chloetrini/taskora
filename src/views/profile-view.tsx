@@ -8,15 +8,15 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { format, parseISO } from 'date-fns'
 import { toast } from 'react-toastify'
 import PageWrapper from '@/components/layout/page-wrapper'
-import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { PasswordInput } from '@/components/ui/password-input'
 import { Field, Textarea } from '@/components/ui/field'
 import { UsernameStatus } from '@/components/auth/username-status'
+import { AvatarUpload } from '@/components/profile/avatar-upload'
 import { useCurrentUser } from '@/components/guards/require-auth'
 import { authKeys } from '@/hooks/auth/use-auth'
-import { useChangePassword, useDeleteAccount, useUpdateProfile } from '@/hooks/profile/use-profile'
+import { useChangePassword, useDeleteAccount, useRemoveAvatar, useUpdateProfile } from '@/hooks/profile/use-profile'
 import { useTodoStats } from '@/hooks/todos/use-todos'
 import { useUsernameAvailability } from '@/hooks/shared/use-username-availability'
 import { passwordFormSchema, profileSchema, type PasswordFormValues, type ProfileFormValues } from '@/lib/schema'
@@ -205,11 +205,12 @@ function DeleteAccount({ user }: { user: User }) {
 export default function ProfileView() {
   const user = useCurrentUser()
   const { data: stats } = useTodoStats()
+  const removeAvatar = useRemoveAvatar()
 
   return (
     <PageWrapper size="wide">
       <div className="flex items-center gap-5">
-        <Avatar name={user.fullName} seed={user.username} size="lg" />
+        <AvatarUpload user={user} />
         <div className="min-w-0">
           <h1 className="truncate font-display text-3xl font-extrabold tracking-[-0.03em]">{user.fullName}</h1>
           <p className="truncate text-muted-foreground">@{user.username}</p>
@@ -217,6 +218,21 @@ export default function ProfileView() {
             Joined {format(parseISO(user.createdAt), 'MMMM yyyy')}
             {user.googleLinked && <span className="rounded-full border border-border px-2 py-0.5 text-xs font-medium text-foreground">Google connected</span>}
           </p>
+          {user.avatarUrl && (
+            <button
+              type="button"
+              onClick={() =>
+                removeAvatar.mutate(undefined, {
+                  onSuccess: () => toast.success('Photo removed'),
+                  onError: error => toast.error(error.message),
+                })
+              }
+              disabled={removeAvatar.isPending}
+              className="mt-1.5 text-[13px] font-medium text-muted-foreground underline-offset-4 hover:text-destructive hover:underline disabled:opacity-60"
+            >
+              {removeAvatar.isPending ? 'Removing…' : 'Remove photo'}
+            </button>
+          )}
         </div>
       </div>
       {user.bio && <p className="mt-5 max-w-prose leading-relaxed">{user.bio}</p>}

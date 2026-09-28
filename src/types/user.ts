@@ -8,6 +8,8 @@ export interface User {
   /** False for accounts created with Google until they set a password. */
   hasPassword: boolean
   googleLinked: boolean
+  /** Same-origin URL of the profile photo (versioned), or null for initials. */
+  avatarUrl: string | null
   createdAt: string
   updatedAt: string
 }

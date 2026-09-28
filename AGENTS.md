@@ -42,7 +42,8 @@ in one place — `src/constants/site.ts` — change it there, never hard-code it
 | `/tasks` | signed in | All tasks as a **card grid**: quick add, status tabs, category tabs, search, Filters panel, active-filter chips, clear completed |
 | `/tasks/new` | signed in | Full task form |
 | `/tasks/[id]/edit` | signed in | Same form, prefilled |
-| `/profile` | signed in | Avatar, stats, edit profile, change username, change password, delete account |
+| `/trash` | signed in | Deleted tasks: Restore, Delete forever (with confirmation), Empty trash |
+| `/profile` | signed in | Profile photo (upload / change / remove), stats, edit profile, change username, change or set password, delete account |
 | anything else | any | 404 page |
 
 - Signed-out visitors hitting a signed-in page go to `/login?next=<path>` and
@@ -53,7 +54,7 @@ in one place — `src/constants/site.ts` — change it there, never hard-code it
 ### 1.2 Navbar
 
 - **Signed out:** logo, Features (landing anchor), theme toggle, Log in, Get started.
-- **Signed in:** logo, Dashboard, All tasks, theme toggle, **New task** (primary
+- **Signed in:** logo, Dashboard, All tasks, Trash, theme toggle, **New task** (primary
   button), avatar menu (name, @username, Profile, Log out).
 - **Mobile:** a menu button opens a panel with the same links; the active route
   is highlighted; navigating closes the menu.
@@ -78,13 +79,21 @@ Actions: create (quick add = title only, or the full form), edit, complete /
 uncomplete, pin / unpin, toggle a subtask inline, delete (with an in-card
 confirmation), clear all completed.
 
+**Trash (soft delete).** Deleting a task — or "Clear N completed" — moves it to
+the trash (`deletedAt` is set); nothing is removed from the database. Trashed
+tasks are hidden from every list, filter, stat, the edit page and every update
+route (all return 404). On `/trash` a task can be **restored** exactly as it
+was, or **deleted forever** (in-row confirmation); **Empty trash** deletes them
+all forever (confirmation first). Only a task already in the trash can be
+deleted forever. No automatic purge — the trash keeps tasks until the user acts.
+
 **Two task layouts, one behaviour:**
 - **All tasks page → cards** (`TodoCard` in `TodoGrid`: 1 column on mobile, 2 on
   tablet, 3 on desktop). Top row: category + priority, pin button. Then a
   divider, checkbox + title + notes (3 lines), subtasks box (first 3, "Show
   all N"), due date + tags, and full-width **Edit** (filled) and **Delete**
   (outline) buttons pinned to the card bottom so a row of cards lines up.
-  Delete swaps the buttons for "Delete this task? Cancel / Delete".
+  Delete swaps the buttons for "Move to trash? Cancel / Delete".
 - **Dashboard → compact rows** (`TodoItem` in `TodoList`): same data, denser, icon buttons on hover.
 
 List controls (all combinable, all stored in the URL so refresh/share keeps the view):
@@ -117,13 +126,20 @@ category and priority.
 
 ### 1.5 Profile & account
 
-- Shows avatar (initials on a colour derived from the username), full name,
+- Shows the profile photo (or initials on a colour derived from the username), full name,
   @username, joined month, bio, and a stats strip.
 - **Edit:** full name, username, email, bio (≤ 160).
 - **Username change:** live "Available / taken / invalid" as you type; the
   server validates again on save.
 - **Change password:** needs the current password. Signs out every *other*
   device (session version bump); this device stays signed in.
+- **Profile photo:** the camera button on the avatar picks a JPG, PNG or WebP up
+  to 2 MB. The browser centre-crops it to a square (max 512×512, WebP or JPEG)
+  before uploading; "Remove photo" goes back to initials. The server checks the
+  size and the **real type from the file's bytes** (never the header or name).
+  The photo is stored on the user document (`avatar`, `select: false`) and
+  served only to its owner from `GET /users/me/avatar?v=<timestamp>`, so it is
+  deleted with the account. Shown on the profile and in the navbar menu.
 - **Log out.**
 - **Delete account:** needs the password; deletes the user and all their tasks.
 
@@ -203,6 +219,7 @@ src/
   components/
     ui/                         # primitives: button, input, select, field (+Textarea), avatar, password-input
     layout/                     # navbar, nav-link, user-menu, footer, page-wrapper
+    profile/                    # avatar-upload (camera button, crop, upload)
     todos/                      # todo-card + todo-grid (All tasks), todo-item + todo-list (dashboard), todo-toolbar, todo-form, quick-add, tags-input, subtasks-editor, todo-empty-state
     marketing/                  # hero-illustration (SVG)
     auth/                       # username-status
@@ -214,6 +231,7 @@ src/
     validation.ts               # ★ THE shared zod schemas (API bodies + field rules)
     schema.ts                   # client form schemas built from validation.ts
     utils.ts, form-errors.ts
+    crop-image.ts               # browser-side square crop for profile photos
   constants/
     site.ts                     # product name, tagline, author
     todo-values.ts              # enums + LIMITS + reserved usernames (shared, no React/Mongoose)
@@ -267,6 +285,9 @@ Forms map `details` onto fields with `applyServerErrors` (`src/lib/form-errors.t
 | `GET /auth/google/callback` | – | `?code&state` from Google | 302 into the app with a session, or to `/login?error=…` |
 | `GET /auth/me` | ✓ | – | user (401 + cookie cleared if invalid) |
 | `GET /users/username-available` | – | `?username=` | `{ available, reason? }` |
+| `GET /users/me/avatar` | ✓ | – | the image bytes (404 if none) |
+| `PUT /users/me/avatar` | ✓ | raw image bytes (jpg/png/webp, ≤ 2 MB) | user (with `avatarUrl`) |
+| `DELETE /users/me/avatar` | ✓ | – | user (`avatarUrl: null`) |
 | `PATCH /users/me` | ✓ | any of `{ fullName, username, email, bio }` | user |
 | `PATCH /users/me/password` | ✓ | `{ currentPassword?, newPassword }` (current required only if the account has a password) | fresh cookie; message "Password changed" or "Password set" |
 | `DELETE /users/me` | ✓ | `{ password }`, or `{ confirmUsername }` for Google-only accounts | clears cookie |
@@ -275,9 +296,13 @@ Forms map `details` onto fields with `applyServerErrors` (`src/lib/form-errors.t
 | `POST /todos` | ✓ | task fields (only `title` required) | task (201) |
 | `GET /todos/[id]` | ✓ | – | task |
 | `PATCH /todos/[id]` | ✓ | any task fields + `completed` | task |
-| `DELETE /todos/[id]` | ✓ | – | `{ _id }` |
+| `DELETE /todos/[id]` | ✓ | – | `{ _id }` — moves it to the trash |
 | `PATCH /todos/[id]/subtasks/[subtaskId]` | ✓ | `{ done }` | task |
-| `DELETE /todos/completed` | ✓ | – | `{ deletedCount }` |
+| `DELETE /todos/completed` | ✓ | – | `{ deletedCount }` — moves completed tasks to the trash |
+| `GET /todos/trash` | ✓ | – | `{ todos }` trashed, most recently deleted first |
+| `DELETE /todos/trash` | ✓ | – | `{ deletedCount }` — empties the trash (permanent) |
+| `POST /todos/[id]/restore` | ✓ | – | task (404 unless it's in the trash) |
+| `DELETE /todos/[id]/permanent` | ✓ | – | `{ _id }` (404 unless it's in the trash) |
 | `GET /api/health` | – | – | `{ status, database }` |
 
 `today` is the viewer's own `YYYY-MM-DD` (the client always sends it). Due
@@ -319,6 +344,9 @@ filters and stats are calendar-day based and the server can't know the user's ti
   `too_many_attempts`); `login-view.tsx` maps codes to messages.
 - User fields: `googleId` (sparse unique, `select: false`), `hasPassword`.
   `toPublicUser` exposes `hasPassword` and `googleLinked`, never `googleId`.
+  `hasPassword` is derived from the password itself whenever the caller
+  selected `+password` (`requireUser`, login, profile and avatar updates do), so
+  accounts created before the flag existed still get "Change password".
 - Redirect URI: `${APP_URL || request origin}/api/v1/auth/google/callback`. It must
   be listed **exactly** in Google Cloud Console (see Section 10).
 
@@ -342,7 +370,11 @@ filters and stats are calendar-day based and the server can't know the user's ti
 - Models use `mongoose.models.X || mongoose.model(...)` to survive hot reload.
 - Every task query filters by `userId` — see **Section 4.9 Multi-tenancy** for the full rules.
 - `userId`, `password`, `sessionVersion` and `__v` are never sent to the client.
-- Index: `{ userId: 1, completed: 1, createdAt: -1 }`; unique indexes on `username` and `email`.
+- Index: `{ userId: 1, completed: 1, createdAt: -1 }` and `{ userId: 1, deletedAt: -1 }` (trash); unique indexes on `username` and `email`.
+- **Soft delete:** every live-task query adds `LIVE = { deletedAt: null }`
+  (in `todo.controller.ts`); trash queries use `{ deletedAt: { $ne: null } }`.
+  `deletedAt: null` also matches old documents with no field. Any new task
+  query must include one of the two, or trashed tasks leak back into the UI.
 - A Mongo duplicate-key error (11000) becomes a 409 with a field detail — that
   covers two people registering the same username at the same instant.
 
@@ -352,6 +384,7 @@ filters and stats are calendar-day based and the server can't know the user's ti
 |---|---|
 | login / register / change password / delete account | 10 per 15 min per IP |
 | create task | 30 per minute per user |
+| upload / remove profile photo | 20 per 15 min per user |
 | username availability check | 120 per minute per IP |
 
 In-memory per server instance → best-effort on Vercel. `DISABLE_RATE_LIMIT=1`
@@ -367,7 +400,7 @@ tenant key, and every query filters by it.
 |---|---|
 | **Tenant** | One user account (`User`). No organisations or teams yet. |
 | **Tenant key** | `userId` (ObjectId) on every tenant-owned document |
-| **Tenant-owned data** | `todos` (including their subtasks, tags and notes) |
+| **Tenant-owned data** | `todos` (including their subtasks, tags, notes and trashed ones), the profile photo (stored on the user) |
 | **Global (shared) data** | `users` itself; the **username** and **email** namespaces are unique across all tenants, which is why the username bloom filter is one global filter |
 | **Where the tenant comes from** | Only the encrypted session cookie, via `requireUser(req)` |
 
@@ -495,6 +528,8 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
 - [ ] Input validated with the shared zod schemas; update bodies are `.strict()`.
 - [ ] No secrets or internal fields in responses (`toPublicUser`, `PUBLIC_FIELDS`).
 - [ ] Search input passes through `escapeRegExp`.
+- [ ] Task queries include `LIVE` or `TRASHED` (soft delete, Section 4.7).
+- [ ] Uploaded files are checked on the server by their bytes, never by the Content-Type header or file name.
 - [ ] Auth-sensitive endpoints are rate limited.
 - [ ] Redirect targets pass `safeNextPath`.
 - [ ] Security headers set in `next.config.ts` (nosniff, frame DENY, referrer, permissions).
@@ -503,15 +538,19 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
 
 ## 8. Testing
 
-- `npm test` runs `src/server/test/api.test.ts` (29 tests): bloom filter
+- `npm test` runs `src/server/test/api.test.ts` (38 tests): bloom filter
   correctness, auth, sessions, forged cookies, rate limiting, profile,
   username changes, password change signing out other devices, account
   deletion, Google sign-in (create, username clash, link by email, find by id,
   bad state, unverified email, failed token exchange, not configured,
-  Google-only password and deletion rules), task privacy, filters, sorting, stats, and validation.
+  Google-only password and deletion rules), profile photo (upload, replace,
+  remove, type sniffing, size, owner-only), trash (soft delete hides the task
+  everywhere, restore, delete forever only from the trash, empty, per-user
+  privacy), task privacy, filters, sorting, stats, and validation.
 - The tests import the **real route handlers** from `src/app/api/**/route.ts`
   and call them with `NextRequest`s through `TestClient`, which keeps cookies
-  like a browser (one `TestClient` = one person, all cookies in a jar). Google is
+  like a browser (one `TestClient` = one person, all cookies in a jar;
+  `upload()` sends raw bytes). Google is
   tested by stubbing `fetch` for the token and userinfo endpoints.
 - `vi.mock` swaps the models for `fake-model.ts` (in-memory Mongoose look-alike)
   and `connectDB` for a no-op. **If a controller uses a new Mongoose method or
@@ -565,11 +604,21 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
 - The page-level "New task" button is mobile-only (`sm:hidden`); the navbar has it from `sm` up. Don't show two on desktop.
 - The dashboard must show newly quick-added tasks (the "Up next" section),
   otherwise quick add looks broken for tasks without a due date.
+- Profile photos use a plain `<img>` (lint rule disabled on that line): the URL
+  is same-origin, session-protected and versioned with `?v=`, so `next/image`
+  would need `images.localPatterns` for the query string and adds nothing.
+- `axiosClient` defaults to `Content-Type: application/json`, which makes axios
+  JSON-encode a `FormData`. File uploads go through `api.upload`, which sends the
+  Blob as the raw body with its own type.
 - In JSX text use typographic apostrophes (’) — straight `'` fails `react/no-unescaped-entities`.
 
 **Server**
 - Bloom filter hashes must stay unsigned (`>>> 0`) — see Section 4.6.
 - `bcrypt` ignores bytes past 72 → password max is 72.
+- Mongoose `.lean()` does **not** apply schema defaults, so a field added later
+  (like `hasPassword`) is simply missing on old documents. Derive from the
+  source of truth where you can, and query `null` (which matches missing).
+- `.lean()` returns BSON `Binary` for Buffer paths — `avatar.controller.ts` converts it with `toBuffer`.
 - `structuredClone` strips the prototype from Mongoose `ObjectId`s (String(id)
   breaks) — the fake model uses its own `clone`.
 - Env vars are read lazily (`env()`), so `next build` works with no secrets.
@@ -684,7 +733,7 @@ Update the status here when a milestone is finished.
   no hydration errors in dev mode (dark and light); signed-in visits to `/` and a 404 page work.
 
 ### ⬜ Milestone 8: Undo and keyboard
-- Undo toast (5s) after deleting a task and after "clear completed" (restore via the API).
+- Undo toast (5s) after deleting a task and after "clear completed" (`POST /todos/[id]/restore` already exists — the trash).
 - Keyboard shortcuts: `n` new task, `/` focus search, `x` toggle the focused task; a `?` help popover.
 - **Done when:** undo restores exactly what was deleted (tests), shortcuts never fire while typing in an input.
 
@@ -694,9 +743,17 @@ Update the status here when a milestone is finished.
 - Email via Resend; `RESEND_API_KEY` added to env docs.
 - **Done when:** tests cover token expiry, reuse and a wrong token; login still gives one generic error.
 
-### ⬜ Milestone 10: Profile photos
-- Upload to Cloudinary (≤ 2 MB, jpg/png/webp), crop to square, initials as the fallback.
+### ✅ Milestone 10: Profile photos (built before 8 and 9, at the user's request)
+- Upload (≤ 2 MB, jpg/png/webp), crop to square in the browser, initials as the fallback.
+- Decision: stored in MongoDB on the user (the cropped image is ~20–60 KB)
+  instead of Cloudinary, so there's no extra service or API key, and deleting
+  the account deletes the photo. Move to Cloudinary or Vercel Blob only if
+  photos get bigger or need a CDN.
 - **Done when:** upload, replace and remove all work; the file type is checked server-side, not just in the browser.
+
+### ✅ Extra: Trash (soft delete)
+- Delete and "clear completed" move tasks to the trash; restore, delete forever, empty trash (Section 1.3).
+- **Done when:** tests prove trashed tasks are hidden everywhere, restore is exact, permanent delete only works from the trash, and trash is private per user.
 
 ### ⬜ Milestone 11: Recurring tasks and reminders
 - Repeat daily / weekly / monthly; completing one creates the next occurrence.

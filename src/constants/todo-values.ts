@@ -27,7 +27,12 @@ export const LIMITS = {
   usernameMax: 20,
   passwordMin: 8,
   passwordMax: 72, // bcrypt ignores bytes past 72
+  avatarBytes: 2 * 1024 * 1024, // 2 MB
+  avatarPixels: 512, // the browser crops to a 512×512 square before upload
 } as const
+
+export const AVATAR_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const
+export type AvatarType = (typeof AVATAR_TYPES)[number]
 
 export const RESERVED_USERNAMES = [
   'admin', 'administrator', 'api', 'app', 'auth', 'dashboard', 'taskora', 'help', 'login', 'logout',

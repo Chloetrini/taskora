@@ -35,6 +35,7 @@ export const LIMITS = {
   auth: { limit: 10, windowMs: 15 * 60 * 1000 }, // login / register / password / delete
   createTask: { limit: 30, windowMs: 60 * 1000 },
   usernameCheck: { limit: 120, windowMs: 60 * 1000 },
+  avatar: { limit: 20, windowMs: 15 * 60 * 1000 }, // upload / remove profile photo, per user
 } as const
 
 /** Test-only. */

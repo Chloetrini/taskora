@@ -22,6 +22,10 @@ const stats = (await import('@/app/api/v1/todos/stats/route')).GET
 const completed = (await import('@/app/api/v1/todos/completed/route')).DELETE
 const todoById = await import('@/app/api/v1/todos/[id]/route')
 const subtask = (await import('@/app/api/v1/todos/[id]/subtasks/[subtaskId]/route')).PATCH
+const trash = await import('@/app/api/v1/todos/trash/route')
+const restore = (await import('@/app/api/v1/todos/[id]/restore/route')).POST
+const forever = (await import('@/app/api/v1/todos/[id]/permanent/route')).DELETE
+const avatar = await import('@/app/api/v1/users/me/avatar/route')
 const googleStart = (await import('@/app/api/v1/auth/google/route')).GET
 const googleCallback = (await import('@/app/api/v1/auth/google/callback/route')).GET
 
@@ -174,6 +178,16 @@ describe('profile', () => {
     expect((await new TestClient().call(login, 'POST', '/api/v1/auth/login', { identifier: user.username, password: 'brandnew123' })).status).toBe(200)
   })
 
+  it('reports hasPassword from the password itself, even without the stored flag', async () => {
+    // Accounts created before the hasPassword field existed have no flag.
+    const { c, user } = await signedIn()
+    const doc = FakeUser.all().find(u => String(u._id) === user._id)!
+    delete doc.hasPassword
+    expect((await c.call(me, 'GET', '/api/v1/auth/me')).json.body.hasPassword).toBe(true)
+    const patched = await c.call(usersMe.PATCH, 'PATCH', '/api/v1/users/me', { bio: 'hi' })
+    expect(patched.json.body.hasPassword).toBe(true)
+  })
+
   it('deletes the account and all its tasks', async () => {
     const { c } = await signedIn()
     await add(c, { title: 'Goes away' })
@@ -182,6 +196,63 @@ describe('profile', () => {
     expect(FakeUser.all()).toHaveLength(0)
     expect(FakeTodo.all()).toHaveLength(0)
     expect((await c.call(me, 'GET', '/api/v1/auth/me')).status).toBe(401)
+  })
+})
+
+describe('profile photo', () => {
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4])
+  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 9, 9, 9])
+  const webp = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 7])
+  const url = '/api/v1/users/me/avatar'
+
+  it('uploads, replaces and removes a photo; only the owner can fetch it', async () => {
+    const { c, user } = await signedIn()
+    expect(user.avatarUrl).toBeNull()
+
+    const up = await c.upload(avatar.PUT, url, png, 'image/png')
+    expect(up.status).toBe(200)
+    expect(up.json.body.avatarUrl).toMatch(/^\/api\/v1\/users\/me\/avatar\?v=\d+$/)
+    expect(up.json.body.avatar).toBeUndefined() // bytes never in the JSON
+    const got = await c.raw(avatar.GET, 'GET', url)
+    expect(got.status).toBe(200)
+    expect(got.headers.get('content-type')).toBe('image/png')
+    expect(new Uint8Array(await got.arrayBuffer())).toEqual(png)
+
+    // Replace: the type comes from the bytes, not the header the browser sent.
+    expect((await c.upload(avatar.PUT, url, jpeg, 'image/png')).status).toBe(200)
+    expect((await c.raw(avatar.GET, 'GET', url)).headers.get('content-type')).toBe('image/jpeg')
+    expect((await c.upload(avatar.PUT, url, webp, 'image/webp')).status).toBe(200)
+    expect((await c.call(me, 'GET', '/api/v1/auth/me')).json.body.avatarUrl).not.toBeNull()
+
+    // Another user never sees it (the route only ever serves your own photo).
+    const { c: other } = await signedIn()
+    expect((await other.raw(avatar.GET, 'GET', url)).status).toBe(404)
+    expect((await new TestClient().raw(avatar.GET, 'GET', url)).status).toBe(401)
+    expect((await new TestClient().upload(avatar.PUT, url, png, 'image/png')).status).toBe(401)
+
+    const removed = await c.call(avatar.DELETE, 'DELETE', url)
+    expect(removed.json.body.avatarUrl).toBeNull()
+    expect((await c.raw(avatar.GET, 'GET', url)).status).toBe(404)
+  })
+
+  it('checks the file type and size on the server', async () => {
+    const { c } = await signedIn()
+    const script = new TextEncoder().encode('<svg onload="alert(1)"></svg>')
+    expect((await c.upload(avatar.PUT, url, script, 'image/png')).status).toBe(415)
+    const gif = new TextEncoder().encode('GIF89a......')
+    expect((await c.upload(avatar.PUT, url, gif, 'image/gif')).status).toBe(415)
+    expect((await c.upload(avatar.PUT, url, new Uint8Array(), 'image/png')).status).toBe(400)
+    const huge = new Uint8Array(2 * 1024 * 1024 + 1)
+    huge.set(png)
+    expect((await c.upload(avatar.PUT, url, huge, 'image/png')).status).toBe(413)
+    expect((await c.call(me, 'GET', '/api/v1/auth/me')).json.body.avatarUrl).toBeNull()
+  })
+
+  it('is deleted with the account', async () => {
+    const { c } = await signedIn()
+    await c.upload(avatar.PUT, url, png, 'image/png')
+    await c.call(usersMe.DELETE, 'DELETE', '/api/v1/users/me', { password: 'supersecret1' })
+    expect(FakeUser.all()).toHaveLength(0)
   })
 })
 
@@ -287,6 +358,96 @@ describe('todos', () => {
     await c.call(todoById.PATCH, 'PATCH', '/x', { completed: true }, { id: d._id })
     expect((await c.call(completed, 'DELETE', '/api/v1/todos/completed')).json.body.deletedCount).toBe(1)
     expect(await titles(c, '')).toEqual(['not done'])
+    expect(FakeTodo.all()).toHaveLength(2) // cleared tasks go to the trash, not away
+    const inTrash = (await c.call(trash.GET, 'GET', '/api/v1/todos/trash')).json.body.todos
+    expect(inTrash.map((t: { title: string }) => t.title)).toEqual(['done'])
+  })
+})
+
+describe('trash', () => {
+  const trashTitles = (c: InstanceType<typeof TestClient>) =>
+    c.call(trash.GET, 'GET', '/api/v1/todos/trash').then(r => r.json.body.todos.map((t: { title: string }) => t.title))
+
+  it('delete moves a task to the trash; it vanishes from lists, stats and edits', async () => {
+    const { c } = await signedIn()
+    const t = await add(c, { title: 'Binned', tags: ['x'], subtasks: [{ title: 'step' }] })
+    await add(c, { title: 'Kept' })
+    const p = { id: t._id }
+    const del = await c.call(todoById.DELETE, 'DELETE', '/x', undefined, p)
+    expect(del.status).toBe(200)
+    expect(del.json.message).toBe('Task moved to trash')
+
+    expect(await titles(c, '')).toEqual(['Kept'])
+    expect(await titles(c, 'tag=x')).toEqual([])
+    expect((await c.call(stats, 'GET', '/api/v1/todos/stats')).json.body.total).toBe(1)
+    expect((await c.call(todoById.GET, 'GET', '/x', undefined, p)).status).toBe(404)
+    expect((await c.call(todoById.PATCH, 'PATCH', '/x', { completed: true }, p)).status).toBe(404)
+    expect((await c.call(subtask, 'PATCH', '/x', { done: true }, { id: t._id, subtaskId: t.subtasks[0]._id })).status).toBe(404)
+    expect((await c.call(todoById.DELETE, 'DELETE', '/x', undefined, p)).status).toBe(404) // already in trash
+
+    const inTrash = (await c.call(trash.GET, 'GET', '/api/v1/todos/trash')).json.body.todos
+    expect(inTrash).toHaveLength(1)
+    expect(inTrash[0]).toMatchObject({ title: 'Binned', tags: ['x'] })
+    expect(inTrash[0].deletedAt).toBeTruthy()
+    expect(inTrash[0].userId).toBeUndefined()
+  })
+
+  it('restores a task exactly as it was', async () => {
+    const { c } = await signedIn()
+    const t = await add(c, { title: 'Come back', priority: 'high', dueDate: '2030-01-02', pinned: true })
+    await c.call(todoById.DELETE, 'DELETE', '/x', undefined, { id: t._id })
+    const res = await c.call(restore, 'POST', '/x', undefined, { id: t._id })
+    expect(res.status).toBe(200)
+    expect(res.json.body).toMatchObject({ title: 'Come back', priority: 'high', dueDate: '2030-01-02', pinned: true, deletedAt: null })
+    expect(await titles(c, '')).toEqual(['Come back'])
+    expect(await trashTitles(c)).toEqual([])
+    // A live task can't be "restored"
+    expect((await c.call(restore, 'POST', '/x', undefined, { id: t._id })).status).toBe(404)
+  })
+
+  it('deletes forever only from the trash, and empties the trash', async () => {
+    const { c } = await signedIn()
+    const a = await add(c, { title: 'A' })
+    const b = await add(c, { title: 'B' })
+    const live = await add(c, { title: 'Live' })
+    // A live task can't skip the trash.
+    expect((await c.call(forever, 'DELETE', '/x', undefined, { id: live._id })).status).toBe(404)
+
+    await c.call(todoById.DELETE, 'DELETE', '/x', undefined, { id: a._id })
+    await new Promise(r => setTimeout(r, 5)) // distinct deletedAt timestamps
+    await c.call(todoById.DELETE, 'DELETE', '/x', undefined, { id: b._id })
+    expect(await trashTitles(c)).toEqual(['B', 'A']) // most recently deleted first
+
+    expect((await c.call(forever, 'DELETE', '/x', undefined, { id: a._id })).status).toBe(200)
+    expect(await trashTitles(c)).toEqual(['B'])
+    expect((await c.call(restore, 'POST', '/x', undefined, { id: a._id })).status).toBe(404) // gone for good
+
+    const emptied = await c.call(trash.DELETE, 'DELETE', '/api/v1/todos/trash')
+    expect(emptied.json.body.deletedCount).toBe(1)
+    expect(await trashTitles(c)).toEqual([])
+    expect(FakeTodo.all().map(t => t.title)).toEqual(['Live'])
+  })
+
+  it("keeps each user's trash private", async () => {
+    const a = await signedIn()
+    const b = await signedIn()
+    const t = await add(a.c, { title: 'Secret' })
+    await a.c.call(todoById.DELETE, 'DELETE', '/x', undefined, { id: t._id })
+
+    expect(await trashTitles(b.c)).toEqual([])
+    expect((await b.c.call(restore, 'POST', '/x', undefined, { id: t._id })).status).toBe(404)
+    expect((await b.c.call(forever, 'DELETE', '/x', undefined, { id: t._id })).status).toBe(404)
+    expect((await b.c.call(trash.DELETE, 'DELETE', '/api/v1/todos/trash')).json.body.deletedCount).toBe(0)
+    expect(await trashTitles(a.c)).toEqual(['Secret'])
+    expect((await new TestClient().call(trash.GET, 'GET', '/api/v1/todos/trash')).status).toBe(401)
+  })
+
+  it('deleting the account also deletes the trash', async () => {
+    const { c } = await signedIn()
+    const t = await add(c, { title: 'Trashed' })
+    await c.call(todoById.DELETE, 'DELETE', '/x', undefined, { id: t._id })
+    await c.call(usersMe.DELETE, 'DELETE', '/api/v1/users/me', { password: 'supersecret1' })
+    expect(FakeTodo.all()).toHaveLength(0)
   })
 })
 

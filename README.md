@@ -8,8 +8,9 @@ A to-do list with accounts, notes, subtasks, tags, filters and a profile, built 
 - Dashboard: today's date as the headline, progress, stats, overdue, due today and up next
 - Tasks with notes, priority, category, tags, due date, subtasks and pinning
 - Tasks shown as cards with Edit and Delete buttons (Delete asks to confirm)
+- Trash: deleted tasks can be restored or deleted forever
 - Category tabs, search, filters (priority, due date, tag), sorting and status tabs, all saved in the URL
-- Profile: edit name, username, email and bio, change password, delete account
+- Profile: photo upload (cropped square), edit name, username, email and bio, change or set password, delete account
 - Dark and light mode, mobile friendly
 
 ## Run locally

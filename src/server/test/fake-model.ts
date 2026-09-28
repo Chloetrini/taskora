@@ -33,6 +33,7 @@ const matches = (doc: Doc, filter: Doc): boolean =>
 // structuredClone would strip ObjectId's prototype (String(id) breaks).
 const clone = <T>(v: T): T => {
   if (v instanceof Types.ObjectId || v == null || typeof v !== 'object') return v
+  if (v instanceof Uint8Array) return Buffer.from(v) as T
   if (v instanceof Date) return new Date(v) as T
   if (Array.isArray(v)) return v.map(clone) as T
   return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, clone(x)])) as T
@@ -100,6 +101,11 @@ export function createFakeModel(options: { defaults: () => Doc; hidden?: string[
       if (doc) Object.assign(doc, update.$set)
       return { modifiedCount: doc ? 1 : 0 }
     },
+    updateMany: async (filter: Doc, update: { $set: Doc }) => {
+      const docs = store.filter(d => matches(d, filter))
+      for (const doc of docs) Object.assign(doc, clone(update.$set))
+      return { modifiedCount: docs.length }
+    },
     findOneAndDelete: (filter: Doc) =>
       query(() => {
         const i = store.findIndex(d => matches(d, filter))
@@ -119,7 +125,7 @@ export function createFakeModel(options: { defaults: () => Doc; hidden?: string[
   return Model
 }
 
-export const FakeUser = createFakeModel({ defaults: () => ({ bio: '', sessionVersion: 0 }), hidden: ['password', 'sessionVersion', 'googleId'] })
+export const FakeUser = createFakeModel({ defaults: () => ({ bio: '', sessionVersion: 0 }), hidden: ['password', 'sessionVersion', 'googleId', 'avatar'] })
 export const FakeTodo = createFakeModel({
-  defaults: () => ({ notes: '', priority: 'medium', category: 'personal', tags: [], dueDate: null, subtasks: [], pinned: false, completed: false, completedAt: null }),
+  defaults: () => ({ notes: '', priority: 'medium', category: 'personal', tags: [], dueDate: null, subtasks: [], pinned: false, completed: false, completedAt: null, deletedAt: null }),
 })

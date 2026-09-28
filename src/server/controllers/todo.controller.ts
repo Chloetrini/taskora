@@ -28,7 +28,13 @@ type TodoDoc = {
   pinned: boolean
   completed: boolean
   completedAt: Date | null
+  deletedAt?: Date | null
 }
+
+// `deletedAt: null` also matches documents created before the trash existed
+// (no field at all), so every live-task query adds LIVE.
+const LIVE = { deletedAt: null }
+const TRASHED = { deletedAt: { $ne: null } }
 
 /** New subtasks get an id up front so the client can key and toggle them. */
 const withSubtaskIds = (subtasks: { _id?: string; title: string; done?: boolean }[]) =>
@@ -97,7 +103,7 @@ export const buildStats = (todos: StatsInput[], today: string) => {
 }
 
 const loadStats = async (userId: string, today: string) => {
-  const all = await Todo.find({ userId }).select('completed completedAt dueDate category priority').lean<StatsInput[]>()
+  const all = await Todo.find({ userId, ...LIVE }).select('completed completedAt dueDate category priority').lean<StatsInput[]>()
   return buildStats(all, today)
 }
 
@@ -105,7 +111,7 @@ export async function listTodos(req: NextRequest) {
   const { userId } = await requireUser(req)
   const { status, priority, category, tag, due, search, sort, today = utcToday() } = parseQuery(req, listTodosQuery)
 
-  const filter: Record<string, unknown> = { userId }
+  const filter: Record<string, unknown> = { userId, ...LIVE }
   if (status === 'active') filter.completed = false
   if (status === 'completed') filter.completed = true
   if (priority) filter.priority = priority
@@ -144,7 +150,7 @@ export async function getStats(req: NextRequest) {
 export async function getTodo(req: NextRequest, id: string) {
   const { userId } = await requireUser(req)
   requireId(id)
-  const todo = await Todo.findOne({ _id: id, userId }).select(PUBLIC_FIELDS).lean()
+  const todo = await Todo.findOne({ _id: id, userId, ...LIVE }).select(PUBLIC_FIELDS).lean()
   // Same 404 for "doesn't exist" and "belongs to someone else".
   if (!todo) throw new HttpError(404, 'Task not found')
   return ok('Task fetched', todo)
@@ -170,7 +176,7 @@ export async function updateTodo(req: NextRequest, id: string) {
   // completedAt follows completed, so "done this week" stays honest.
   if (updates.completed !== undefined) set.completedAt = updates.completed ? new Date() : null
 
-  const todo = await Todo.findOneAndUpdate({ _id: id, userId }, { $set: set }, { new: true, runValidators: true }).select(PUBLIC_FIELDS).lean()
+  const todo = await Todo.findOneAndUpdate({ _id: id, userId, ...LIVE }, { $set: set }, { new: true, runValidators: true }).select(PUBLIC_FIELDS).lean()
   if (!todo) throw new HttpError(404, 'Task not found')
   return ok('Task updated', todo)
 }
@@ -181,25 +187,59 @@ export async function toggleSubtask(req: NextRequest, id: string, subtaskId: str
   requireId(subtaskId, 'subtask')
   const { done } = await parseBody(req, toggleSubtaskBody)
 
-  const todo = await Todo.findOne({ _id: id, userId }).select('subtasks').lean<{ subtasks: SubtaskDoc[] }>()
+  const todo = await Todo.findOne({ _id: id, userId, ...LIVE }).select('subtasks').lean<{ subtasks: SubtaskDoc[] }>()
   if (!todo) throw new HttpError(404, 'Task not found')
   if (!todo.subtasks.some(s => String(s._id) === subtaskId)) throw new HttpError(404, 'Subtask not found')
 
   const subtasks = todo.subtasks.map(s => (String(s._id) === subtaskId ? { ...s, done } : s))
-  const updated = await Todo.findOneAndUpdate({ _id: id, userId }, { $set: { subtasks } }, { new: true }).select(PUBLIC_FIELDS).lean()
+  const updated = await Todo.findOneAndUpdate({ _id: id, userId, ...LIVE }, { $set: { subtasks } }, { new: true }).select(PUBLIC_FIELDS).lean()
   return ok('Subtask updated', updated)
 }
 
+/** DELETE /todos/[id] — moves the task to the trash (restorable). */
 export async function deleteTodo(req: NextRequest, id: string) {
   const { userId } = await requireUser(req)
   requireId(id)
-  const todo = await Todo.findOneAndDelete({ _id: id, userId }).select('_id').lean()
+  const todo = await Todo.findOneAndUpdate({ _id: id, userId, ...LIVE }, { $set: { deletedAt: new Date() } }).select('_id').lean()
   if (!todo) throw new HttpError(404, 'Task not found')
-  return ok('Task deleted', { _id: id })
+  return ok('Task moved to trash', { _id: id })
 }
 
+/** DELETE /todos/completed — moves every completed task to the trash. */
 export async function clearCompleted(req: NextRequest) {
   const { userId } = await requireUser(req)
-  const { deletedCount } = await Todo.deleteMany({ userId, completed: true })
-  return ok(deletedCount === 1 ? 'Cleared 1 completed task' : `Cleared ${deletedCount} completed tasks`, { deletedCount })
+  const { modifiedCount } = await Todo.updateMany({ userId, completed: true, ...LIVE }, { $set: { deletedAt: new Date() } })
+  return ok(modifiedCount === 1 ? 'Moved 1 completed task to trash' : `Moved ${modifiedCount} completed tasks to trash`, { deletedCount: modifiedCount })
+}
+
+/** GET /todos/trash — this user's trashed tasks, most recently deleted first. */
+export async function listTrash(req: NextRequest) {
+  const { userId } = await requireUser(req)
+  const todos = await Todo.find({ userId, ...TRASHED }).sort({ deletedAt: -1 }).limit(MAX_TODOS).select(PUBLIC_FIELDS).lean<TodoDoc[]>()
+  return ok('Trash fetched', { todos })
+}
+
+/** POST /todos/[id]/restore — back to the list exactly as it was. */
+export async function restoreTodo(req: NextRequest, id: string) {
+  const { userId } = await requireUser(req)
+  requireId(id)
+  const todo = await Todo.findOneAndUpdate({ _id: id, userId, ...TRASHED }, { $set: { deletedAt: null } }, { new: true }).select(PUBLIC_FIELDS).lean()
+  if (!todo) throw new HttpError(404, 'Task not found in trash')
+  return ok('Task restored', todo)
+}
+
+/** DELETE /todos/[id]/permanent — only a task already in the trash can be deleted for good. */
+export async function deleteTodoForever(req: NextRequest, id: string) {
+  const { userId } = await requireUser(req)
+  requireId(id)
+  const todo = await Todo.findOneAndDelete({ _id: id, userId, ...TRASHED }).select('_id').lean()
+  if (!todo) throw new HttpError(404, 'Task not found in trash')
+  return ok('Task deleted forever', { _id: id })
+}
+
+/** DELETE /todos/trash — empties this user's trash. */
+export async function emptyTrash(req: NextRequest) {
+  const { userId } = await requireUser(req)
+  const { deletedCount } = await Todo.deleteMany({ userId, ...TRASHED })
+  return ok(deletedCount === 1 ? 'Deleted 1 task forever' : `Deleted ${deletedCount} tasks forever`, { deletedCount })
 }

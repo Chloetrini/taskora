@@ -53,7 +53,7 @@ export default function UserMenu({ user }: { user: User }) {
         aria-label="Account menu"
         className="rounded-full"
       >
-        <Avatar name={user.fullName} seed={user.username} size="sm" />
+        <Avatar name={user.fullName} seed={user.username} src={user.avatarUrl} size="sm" />
       </button>
       {open && (
         <div role="menu" className="absolute right-0 z-50 mt-2 w-60 overflow-hidden rounded-lg border border-border bg-surface shadow-xl shadow-black/10">

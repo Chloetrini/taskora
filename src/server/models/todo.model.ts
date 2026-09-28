@@ -23,6 +23,9 @@ export interface ITodo {
   pinned: boolean
   completed: boolean
   completedAt: Date | null
+  // Set when the task is moved to the trash; null for live tasks. Trashed
+  // tasks are hidden everywhere except the trash until restored or purged.
+  deletedAt: Date | null
   createdAt: Date
   updatedAt: Date
 }
@@ -45,12 +48,15 @@ const todoSchema = new Schema<ITodo>(
     pinned: { type: Boolean, default: false },
     completed: { type: Boolean, default: false },
     completedAt: { type: Date, default: null },
+    deletedAt: { type: Date, default: null },
   },
   { timestamps: true }
 )
 
 // Main list query: one user, filtered by status, newest first.
 todoSchema.index({ userId: 1, completed: 1, createdAt: -1 })
+// Trash page: one user's trashed tasks, most recently deleted first.
+todoSchema.index({ userId: 1, deletedAt: -1 })
 
 const Todo: Model<ITodo> = (mongoose.models.Todo as Model<ITodo>) || mongoose.model<ITodo>('Todo', todoSchema)
 export default Todo
