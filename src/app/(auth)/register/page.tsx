@@ -7,7 +7,11 @@ import { googleEnv } from '@/server/config/env'
 // soon as GOOGLE_CLIENT_ID/SECRET are set — no rebuild needed.
 export const dynamic = 'force-dynamic'
 
-export const metadata: Metadata = { title: 'Create account' }
+export const metadata: Metadata = {
+  title: 'Create account',
+  description: 'Create a free Taskora account in seconds and start organising your tasks with notes, subtasks and tags.',
+  alternates: { canonical: '/register' },
+}
 
 export default function RegisterPage() {
   return (

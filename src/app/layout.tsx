@@ -1,15 +1,24 @@
 import type { Metadata, Viewport } from 'next'
 import Providers from './providers'
 import { SITE } from '@/constants/site'
+import { siteUrl } from '@/lib/site-url'
 import './globals.css'
 
 export const metadata: Metadata = {
+  // Makes every relative URL below (canonical, share image) absolute.
+  metadataBase: new URL(siteUrl()),
+  applicationName: SITE.name,
   title: { default: SITE.name, template: `%s | ${SITE.name}` },
-  description: SITE.tagline,
+  description: SITE.description,
+  keywords: ['to-do list', 'task manager', 'todo app', 'subtasks', 'task tags', 'task filters', 'personal tasks'],
+  authors: [{ name: SITE.author.name, url: SITE.author.url }],
+  alternates: { canonical: '/' },
   icons: {
     icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='9' fill='%232F5BEA'/><path d='M9 16.5l4.5 4.5L23 11' stroke='white' stroke-width='3.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>",
   },
-  openGraph: { title: SITE.name, description: SITE.tagline, siteName: SITE.name, type: 'website' },
+  openGraph: { title: SITE.name, description: SITE.description, siteName: SITE.name, type: 'website', locale: 'en_US', url: '/' },
+  // The share image comes from app/opengraph-image.tsx; Twitter/X reuse it.
+  twitter: { card: 'summary_large_image', title: SITE.name, description: SITE.description },
 }
 
 export const viewport: Viewport = {

@@ -44,6 +44,7 @@ in one place — `src/constants/site.ts` — change it there, never hard-code it
 | `/tasks/[id]/edit` | signed in | Same form, prefilled |
 | `/trash` | signed in | Deleted tasks: Restore, Delete forever (with confirmation), Empty trash |
 | `/profile` | signed in | Profile photo (upload / change / remove), stats, edit profile, change username, change or set password, delete account |
+| `/robots.txt`, `/sitemap.xml`, `/opengraph-image` | public | Generated SEO files (Section 6b) |
 | anything else | any | 404 page |
 
 - Signed-out visitors hitting a signed-in page go to `/login?next=<path>` and
@@ -205,6 +206,7 @@ src/
     (marketing)/                # public pages: layout (navbar+footer), page.tsx = landing
     (auth)/                     # layout wraps <GuestOnly>; login/, register/
     (app)/                      # layout wraps <RequireAuth>; dashboard/, tasks/, tasks/new/, tasks/[id]/edit/, profile/
+    robots.ts, sitemap.ts, opengraph-image.tsx   # SEO files (Section 6b)
     api/health/route.ts
     api/v1/**/route.ts          # one-line handlers: export const GET = route(controllerFn)
   proxy.ts                      # cookie-presence redirects (Next 16 name for middleware)
@@ -232,8 +234,9 @@ src/
     schema.ts                   # client form schemas built from validation.ts
     utils.ts, form-errors.ts
     crop-image.ts               # browser-side square crop for profile photos
+    site-url.ts                 # the public origin (APP_URL) for canonical links, sitemap, share tags
   constants/
-    site.ts                     # product name, tagline, author
+    site.ts                     # product name, tagline, description (SEO), author
     todo-values.ts              # enums + LIMITS + reserved usernames (shared, no React/Mongoose)
     todo.ts                     # UI metadata: labels, icons, colours, sort/due options
   context/theme-context.tsx
@@ -528,6 +531,31 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
 
 ---
 
+## 6b. SEO
+
+- **Public origin:** `siteUrl()` (`lib/site-url.ts`) = `APP_URL`, else Vercel's production
+  URL, else `http://localhost:3000`. It feeds `metadataBase`, canonical links, the
+  sitemap, `robots.txt` and the JSON-LD. It is read **at build time**, so set `APP_URL`
+  on Vercel and redeploy after changing the domain.
+- **Root layout** (`app/layout.tsx`): title template `%s | Taskora`, `SITE.description`,
+  keywords, canonical `/`, Open Graph and Twitter (`summary_large_image`).
+  The share picture is `app/opengraph-image.tsx` (1200×630, drawn from token colours;
+  Twitter/X reuse it). Copy lives in `constants/site.ts`; never hard-code it.
+- **Landing page** has its own absolute title and description and `WebApplication`
+  JSON-LD (`<` is escaped in the inline script). Login and register have their own
+  descriptions and canonicals (`?next=` / `?error=` variants all point at one page).
+- **Private pages are never indexed:** the `(app)` layout exports
+  `robots: { index: false, follow: false }`; `/api/*` sends `X-Robots-Tag: noindex, nofollow`
+  (`next.config.ts`); `robots.txt` disallows `/api/`, `/dashboard`, `/tasks`, `/trash`, `/profile`;
+  the 404 page is noindex automatically.
+- **Sitemap** lists only public pages (`/`, `/register`, `/login`). A new public page
+  must be added to `app/sitemap.ts`; a new signed-in page goes under `(app)` (noindex
+  for free) and into the `robots.txt` disallow list.
+- Signed-in pages use the client-side `RequireAuth`, so crawlers only ever see the
+  public pages; SEO effort belongs on the landing, login and register pages.
+
+---
+
 ## 7. Security checklist (review on every backend change)
 
 - [ ] Tenant isolation rules in Section 4.9 hold (tenant id from the session only, every tenant-owned query scoped by `userId`, 404 not 403, cascade delete, cross-tenant test).
@@ -540,6 +568,7 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
 - [ ] Uploaded files are checked on the server by their bytes, never by the Content-Type header or file name.
 - [ ] Auth-sensitive endpoints are rate limited.
 - [ ] Redirect targets pass `safeNextPath`.
+- [ ] New signed-in pages are under `(app)` (noindex) and disallowed in `robots.ts`; new public pages are in `sitemap.ts`.
 - [ ] Security headers set in `next.config.ts` (nosniff, frame DENY, referrer, permissions).
 
 ---
@@ -651,7 +680,9 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
    - `MONGODB_DB` — `taskora`
    - `SESSION_SECRET` — 32+ random characters (`openssl rand -base64 32`)
    - Optional, for Google sign-in: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
-     and `APP_URL` (e.g. `https://taskora.vercel.app`, no trailing slash)
+     and `APP_URL` (e.g. `https://taskora.vercel.app`, no trailing slash).
+   **Set `APP_URL` even without Google**: canonical links, the sitemap and share
+   previews use it (Section 6b)
 5. Deploy, then open `/api/health` → `"database": "connected"`.
 
 **Setting up Google sign-in (Google Cloud Console):**
