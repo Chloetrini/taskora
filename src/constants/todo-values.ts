@@ -1,0 +1,38 @@
+// Shared by the server (models, validators) and the client (forms, filters).
+// Plain data only — no React, no Mongoose — so both sides can import it.
+export const TODO_PRIORITIES = ['low', 'medium', 'high'] as const
+export type TodoPriority = (typeof TODO_PRIORITIES)[number]
+
+export const TODO_CATEGORIES = ['personal', 'work', 'study', 'health', 'finance', 'other'] as const
+export type TodoCategory = (typeof TODO_CATEGORIES)[number]
+
+export const TODO_STATUSES = ['all', 'active', 'completed'] as const
+export type TodoStatus = (typeof TODO_STATUSES)[number]
+
+export const TODO_SORTS = ['newest', 'oldest', 'due', 'priority', 'title'] as const
+export type TodoSort = (typeof TODO_SORTS)[number]
+
+export const TODO_DUE_FILTERS = ['any', 'today', 'overdue', 'upcoming', 'none'] as const
+export type TodoDueFilter = (typeof TODO_DUE_FILTERS)[number]
+
+export const LIMITS = {
+  title: 120,
+  notes: 2000,
+  tags: 5,
+  tagLength: 20,
+  subtasks: 20,
+  bio: 160,
+  fullName: 60,
+  usernameMin: 3,
+  usernameMax: 20,
+  passwordMin: 8,
+  passwordMax: 72, // bcrypt ignores bytes past 72
+} as const
+
+export const RESERVED_USERNAMES = [
+  'admin', 'administrator', 'api', 'app', 'auth', 'dashboard', 'taskora', 'help', 'login', 'logout',
+  'me', 'new', 'profile', 'register', 'root', 'settings', 'signup', 'support', 'system',
+  'tasks', 'user', 'users',
+]
+
+export const USERNAME_PATTERN = /^[a-z][a-z0-9_]*$/

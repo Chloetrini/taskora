@@ -1,0 +1,139 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-display: 'Bricolage Grotesque', 'Geist', ui-sans-serif, system-ui, sans-serif;
+
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-foreground: var(--foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-done: var(--done);
+  --color-destructive: var(--destructive);
+  --color-warning: var(--warning);
+
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1.125rem;
+}
+
+:root {
+  color-scheme: light;
+  --background: #f3f6fc;
+  --surface: #ffffff;
+  --foreground: #16233f;
+  --muted-foreground: #5e6b85;
+  --border: #dce3f0;
+  --primary: #2f5bea;
+  --primary-foreground: #ffffff;
+  --primary-soft: #e6ecfd;
+  --done: #16936b;
+  --destructive: #cf3a3a;
+  --warning: #b77d00;
+}
+
+.dark {
+  /* Tells the browser to draw native controls (select popups, date picker,
+     scrollbars) dark too — same lesson as Eventra's dropdowns. */
+  color-scheme: dark;
+  --background: #0e1524;
+  --surface: #162036;
+  --foreground: #e7edf8;
+  --muted-foreground: #93a0ba;
+  --border: #26324b;
+  --primary: #7593ff;
+  --primary-foreground: #0e1524;
+  --primary-soft: #1d2a4a;
+  --done: #3cc495;
+  --destructive: #f07070;
+  --warning: #e8b53a;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    min-height: 100dvh;
+  }
+  ::selection {
+    background-color: var(--primary);
+    color: var(--primary-foreground);
+  }
+  :focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+  }
+}
+
+/* The one signature moment: completing a task draws an ink line through it. */
+.ink-strike {
+  position: relative;
+  display: inline;
+  background-image: linear-gradient(currentColor, currentColor);
+  background-repeat: no-repeat;
+  background-position: 0 58%;
+  background-size: 0% 2px;
+  transition: background-size 320ms cubic-bezier(0.65, 0, 0.35, 1), color 200ms ease;
+}
+.ink-strike[data-done='true'] {
+  background-size: 100% 2px;
+}
+
+.check-path {
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  transition: stroke-dashoffset 260ms cubic-bezier(0.65, 0, 0.35, 1) 60ms;
+}
+[data-checked='true'] .check-path {
+  stroke-dashoffset: 0;
+}
+
+@keyframes skeleton-pulse {
+  50% { opacity: 0.5; }
+}
+.skeleton {
+  animation: skeleton-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+  }
+}
+
+/* Toasts follow the app's own tokens, so they switch with the theme instantly.
+   Scoped to .Toastify (not :root) because react-toastify v11 injects its own
+   :root variables at runtime, after our stylesheet. */
+.Toastify {
+  --toastify-color-light: var(--surface);
+  --toastify-text-color-light: var(--foreground);
+  --toastify-color-success: var(--done);
+  --toastify-color-error: var(--destructive);
+  --toastify-icon-color-success: var(--done);
+  --toastify-icon-color-error: var(--destructive);
+  --toastify-font-family: var(--font-sans);
+}
+.Toastify .Toastify__toast {
+  background: var(--surface);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px -12px rgb(0 0 0 / 0.35);
+  font-size: 14px;
+  min-height: 52px;
+}
+.Toastify .Toastify__close-button {
+  color: var(--muted-foreground);
+}
