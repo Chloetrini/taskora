@@ -28,5 +28,12 @@ export const createTodo = (data: TodoInput) => api.post<Todo>('/todos', data)
 export const updateTodo = (id: string, data: UpdateTodoInput) => api.patch<Todo>(`/todos/${id}`, data)
 export const toggleSubtask = (id: string, subtaskId: string, done: boolean) =>
   api.patch<Todo>(`/todos/${id}/subtasks/${subtaskId}`, { done })
+/** Moves the task to the trash. */
 export const deleteTodo = (id: string) => api.delete<{ _id: string }>(`/todos/${id}`)
+/** Moves every completed task to the trash. */
 export const clearCompletedTodos = () => api.delete<{ deletedCount: number }>('/todos/completed')
+
+export const getTrash = () => api.get<{ todos: Todo[] }>('/todos/trash')
+export const restoreTodo = (id: string) => api.post<Todo>(`/todos/${id}/restore`)
+export const deleteTodoForever = (id: string) => api.delete<{ _id: string }>(`/todos/${id}/permanent`)
+export const emptyTrash = () => api.delete<{ deletedCount: number }>('/todos/trash')

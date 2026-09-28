@@ -4,7 +4,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 // imported) because proxy runs separately and shouldn't pull in server code.
 const SESSION_COOKIE = 'taskora_session'
 
-const APP_PATHS = ['/dashboard', '/tasks', '/profile']
+const APP_PATHS = ['/dashboard', '/tasks', '/trash', '/profile']
 const GUEST_PATHS = ['/login', '/register']
 
 /**
@@ -29,5 +29,5 @@ export function proxy(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/dashboard/:path*', '/tasks/:path*', '/profile/:path*', '/login', '/register'],
+  matcher: ['/dashboard/:path*', '/tasks/:path*', '/trash/:path*', '/profile/:path*', '/login', '/register'],
 }

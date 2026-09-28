@@ -57,6 +57,7 @@ export default function Navbar() {
                 <NavLink href="/tasks" exact>
                   All tasks
                 </NavLink>
+                <NavLink href="/trash">Trash</NavLink>
               </>
             ) : (
               <Link href="/#features" className="rounded-md px-3 py-2 text-sm font-medium text-muted-foreground hover:text-foreground">
@@ -116,6 +117,7 @@ export default function Navbar() {
               <NavLink href="/tasks" exact>
                 All tasks
               </NavLink>
+              <NavLink href="/trash">Trash</NavLink>
               <NavLink href="/profile">Profile</NavLink>
               <Link href="/tasks/new" className={cn(buttonVariants(), 'mt-2')}>
                 <Plus /> New task

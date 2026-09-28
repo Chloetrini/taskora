@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { Plus, RotateCw } from 'lucide-react'
+import { Plus, RotateCw, Trash2 } from 'lucide-react'
 import PageWrapper from '@/components/layout/page-wrapper'
 import QuickAdd from '@/components/todos/quick-add'
 import TodoToolbar from '@/components/todos/todo-toolbar'
@@ -61,13 +61,16 @@ export default function TasksView() {
           <TodoGrid todos={data.todos} onTagClick={tag => setFilter('tag', tag)} />
         )}
 
-        {data && data.stats.completed > 0 && (
-          <div className="mt-3 flex justify-end">
+        <div className="mt-3 flex justify-end gap-1">
+          {data && data.stats.completed > 0 && (
             <Button variant="ghost" size="sm" onClick={() => clearCompleted.mutate()} disabled={clearCompleted.isPending}>
               Clear {data.stats.completed} completed
             </Button>
-          </div>
-        )}
+          )}
+          <Link href="/trash" className={buttonVariants({ variant: 'ghost', size: 'sm' })}>
+            <Trash2 /> Trash
+          </Link>
+        </div>
       </section>
     </PageWrapper>
   )

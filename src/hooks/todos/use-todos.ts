@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { getTodo, getTodos, getTodoStats } from '@/api/todos'
+import { getTodo, getTodos, getTodoStats, getTrash } from '@/api/todos'
 import type { TodoFilters } from '@/types/todo'
 
 export const todoKeys = {
@@ -8,6 +8,7 @@ export const todoKeys = {
   list: (filters: TodoFilters) => [...todoKeys.lists(), filters] as const,
   stats: () => [...todoKeys.all, 'stats'] as const,
   detail: (id: string) => [...todoKeys.all, 'detail', id] as const,
+  trash: () => [...todoKeys.all, 'trash'] as const,
 }
 
 /**
@@ -36,4 +37,12 @@ export const useTodo = (id: string | undefined) =>
     select: res => res.body,
     enabled: Boolean(id),
     retry: false,
+  })
+
+/** Trashed tasks, most recently deleted first. */
+export const useTrash = () =>
+  useQuery({
+    queryKey: todoKeys.trash(),
+    queryFn: getTrash,
+    select: res => res.body.todos,
   })

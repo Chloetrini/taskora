@@ -128,7 +128,7 @@ export default function TodoCard({ todo, onTagClick }: { todo: Todo; onTagClick?
       <div className="mt-auto pt-4">
         {confirmDelete ? (
           <div role="group" aria-label={`Confirm deleting "${todo.title}"`} className="flex items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2">
-            <p className="text-sm font-medium">Delete this task?</p>
+            <p className="text-sm font-medium">Move to trash?</p>
             <div className="flex gap-1.5">
               <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(false)}>
                 Cancel

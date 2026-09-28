@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'react-toastify'
-import { clearCompletedTodos, createTodo, deleteTodo, toggleSubtask, updateTodo, type TodosListBody } from '@/api/todos'
+import { clearCompletedTodos, createTodo, deleteTodo, deleteTodoForever, emptyTrash, restoreTodo, toggleSubtask, updateTodo, type TodosListBody } from '@/api/todos'
 import type { ApiResponse } from '@/api/client'
 import type { Todo, TodoInput, UpdateTodoInput } from '@/types/todo'
 import { todoKeys } from '@/hooks/todos/use-todos'
@@ -111,8 +111,8 @@ export const useDeleteTodo = () => {
           stats: { ...body.stats, total, completed, active: total - completed },
         }
       }),
-    onSuccess: () => {
-      toast.success('Task deleted')
+    onSuccess: res => {
+      toast.success(res.message) // "Task moved to trash"
     },
     onError: (error: Error, _id, snapshot) => {
       rollback(snapshot)
@@ -130,6 +130,82 @@ export const useClearCompleted = () => {
       toast.success(res.message)
     },
     onError: (error: Error) => {
+      toast.error(error.message)
+    },
+    onSettled: settle,
+  })
+}
+
+type TrashCache = ApiResponse<{ todos: Todo[] }> | undefined
+
+/**
+ * Optimistically drops tasks from the trash page (restore / delete forever /
+ * empty), rolls back on error, and resyncs everything on settle — a restored
+ * task has to reappear in the lists and stats.
+ */
+function useOptimisticTrash() {
+  const queryClient = useQueryClient()
+
+  const remove = async (keep: (t: Todo) => boolean): Promise<TrashCache> => {
+    await queryClient.cancelQueries({ queryKey: todoKeys.trash() })
+    const snapshot = queryClient.getQueryData<ApiResponse<{ todos: Todo[] }>>(todoKeys.trash())
+    queryClient.setQueryData<ApiResponse<{ todos: Todo[] }>>(todoKeys.trash(), old =>
+      old ? { ...old, body: { todos: old.body.todos.filter(keep) } } : old
+    )
+    return snapshot
+  }
+
+  const rollback = (snapshot: TrashCache) => {
+    if (snapshot) queryClient.setQueryData(todoKeys.trash(), snapshot)
+  }
+
+  const settle = () => queryClient.invalidateQueries({ queryKey: todoKeys.all })
+
+  return { remove, rollback, settle }
+}
+
+export const useRestoreTodo = () => {
+  const { remove, rollback, settle } = useOptimisticTrash()
+  return useMutation({
+    mutationFn: (id: string) => restoreTodo(id),
+    onMutate: id => remove(t => t._id !== id),
+    onSuccess: res => {
+      toast.success(res.message)
+    },
+    onError: (error: Error, _id, snapshot) => {
+      rollback(snapshot)
+      toast.error(error.message)
+    },
+    onSettled: settle,
+  })
+}
+
+export const useDeleteForever = () => {
+  const { remove, rollback, settle } = useOptimisticTrash()
+  return useMutation({
+    mutationFn: (id: string) => deleteTodoForever(id),
+    onMutate: id => remove(t => t._id !== id),
+    onSuccess: res => {
+      toast.success(res.message)
+    },
+    onError: (error: Error, _id, snapshot) => {
+      rollback(snapshot)
+      toast.error(error.message)
+    },
+    onSettled: settle,
+  })
+}
+
+export const useEmptyTrash = () => {
+  const { remove, rollback, settle } = useOptimisticTrash()
+  return useMutation({
+    mutationFn: emptyTrash,
+    onMutate: () => remove(() => false),
+    onSuccess: res => {
+      toast.success(res.message)
+    },
+    onError: (error: Error, _vars, snapshot) => {
+      rollback(snapshot)
       toast.error(error.message)
     },
     onSettled: settle,

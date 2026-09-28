@@ -101,6 +101,11 @@ export function createFakeModel(options: { defaults: () => Doc; hidden?: string[
       if (doc) Object.assign(doc, update.$set)
       return { modifiedCount: doc ? 1 : 0 }
     },
+    updateMany: async (filter: Doc, update: { $set: Doc }) => {
+      const docs = store.filter(d => matches(d, filter))
+      for (const doc of docs) Object.assign(doc, clone(update.$set))
+      return { modifiedCount: docs.length }
+    },
     findOneAndDelete: (filter: Doc) =>
       query(() => {
         const i = store.findIndex(d => matches(d, filter))
@@ -122,5 +127,5 @@ export function createFakeModel(options: { defaults: () => Doc; hidden?: string[
 
 export const FakeUser = createFakeModel({ defaults: () => ({ bio: '', sessionVersion: 0 }), hidden: ['password', 'sessionVersion', 'googleId', 'avatar'] })
 export const FakeTodo = createFakeModel({
-  defaults: () => ({ notes: '', priority: 'medium', category: 'personal', tags: [], dueDate: null, subtasks: [], pinned: false, completed: false, completedAt: null }),
+  defaults: () => ({ notes: '', priority: 'medium', category: 'personal', tags: [], dueDate: null, subtasks: [], pinned: false, completed: false, completedAt: null, deletedAt: null }),
 })

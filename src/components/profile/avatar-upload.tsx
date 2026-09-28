@@ -1,22 +1,20 @@
 'use client'
 
 import { useRef, useState } from 'react'
-import { Camera, Trash2 } from 'lucide-react'
+import { Camera } from 'lucide-react'
 import { toast } from 'react-toastify'
 import { Avatar } from '@/components/ui/avatar'
-import { Button } from '@/components/ui/button'
-import { useRemoveAvatar, useUploadAvatar } from '@/hooks/profile/use-profile'
+import { useUploadAvatar } from '@/hooks/profile/use-profile'
 import { checkAvatarFile, cropToSquare } from '@/lib/crop-image'
 import { AVATAR_TYPES } from '@/constants/todo-values'
 import type { User } from '@/types/user'
 
-/** The big profile avatar with "Upload photo" / "Change photo" and "Remove photo". */
+/** The big profile avatar with a camera button to upload or change the photo. */
 export function AvatarUpload({ user }: { user: User }) {
   const input = useRef<HTMLInputElement>(null)
   const upload = useUploadAvatar()
-  const remove = useRemoveAvatar()
   const [cropping, setCropping] = useState(false)
-  const busy = cropping || upload.isPending || remove.isPending
+  const busy = cropping || upload.isPending
 
   const onFile = async (file: File | undefined) => {
     if (input.current) input.current.value = '' // choosing the same file again still fires onChange
@@ -40,7 +38,7 @@ export function AvatarUpload({ user }: { user: User }) {
   }
 
   return (
-    <div className="flex flex-col items-start gap-3">
+    <div className="shrink-0">
       <div className="relative">
         <Avatar name={user.fullName} seed={user.username} src={user.avatarUrl} size="lg" className={busy ? 'opacity-60' : undefined} />
         <button
@@ -62,21 +60,6 @@ export function AvatarUpload({ user }: { user: User }) {
         aria-hidden
         onChange={e => onFile(e.target.files?.[0])}
       />
-      {user.avatarUrl && (
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={busy}
-          onClick={() =>
-            remove.mutate(undefined, {
-              onSuccess: () => toast.success('Photo removed'),
-              onError: error => toast.error(error.message),
-            })
-          }
-        >
-          <Trash2 /> {remove.isPending ? 'Removing…' : 'Remove photo'}
-        </Button>
-      )}
     </div>
   )
 }

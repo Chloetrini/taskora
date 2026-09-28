@@ -22,6 +22,9 @@ const stats = (await import('@/app/api/v1/todos/stats/route')).GET
 const completed = (await import('@/app/api/v1/todos/completed/route')).DELETE
 const todoById = await import('@/app/api/v1/todos/[id]/route')
 const subtask = (await import('@/app/api/v1/todos/[id]/subtasks/[subtaskId]/route')).PATCH
+const trash = await import('@/app/api/v1/todos/trash/route')
+const restore = (await import('@/app/api/v1/todos/[id]/restore/route')).POST
+const forever = (await import('@/app/api/v1/todos/[id]/permanent/route')).DELETE
 const avatar = await import('@/app/api/v1/users/me/avatar/route')
 const googleStart = (await import('@/app/api/v1/auth/google/route')).GET
 const googleCallback = (await import('@/app/api/v1/auth/google/callback/route')).GET
@@ -355,6 +358,96 @@ describe('todos', () => {
     await c.call(todoById.PATCH, 'PATCH', '/x', { completed: true }, { id: d._id })
     expect((await c.call(completed, 'DELETE', '/api/v1/todos/completed')).json.body.deletedCount).toBe(1)
     expect(await titles(c, '')).toEqual(['not done'])
+    expect(FakeTodo.all()).toHaveLength(2) // cleared tasks go to the trash, not away
+    const inTrash = (await c.call(trash.GET, 'GET', '/api/v1/todos/trash')).json.body.todos
+    expect(inTrash.map((t: { title: string }) => t.title)).toEqual(['done'])
+  })
+})
+
+describe('trash', () => {
+  const trashTitles = (c: InstanceType<typeof TestClient>) =>
+    c.call(trash.GET, 'GET', '/api/v1/todos/trash').then(r => r.json.body.todos.map((t: { title: string }) => t.title))
+
+  it('delete moves a task to the trash; it vanishes from lists, stats and edits', async () => {
+    const { c } = await signedIn()
+    const t = await add(c, { title: 'Binned', tags: ['x'], subtasks: [{ title: 'step' }] })
+    await add(c, { title: 'Kept' })
+    const p = { id: t._id }
+    const del = await c.call(todoById.DELETE, 'DELETE', '/x', undefined, p)
+    expect(del.status).toBe(200)
+    expect(del.json.message).toBe('Task moved to trash')
+
+    expect(await titles(c, '')).toEqual(['Kept'])
+    expect(await titles(c, 'tag=x')).toEqual([])
+    expect((await c.call(stats, 'GET', '/api/v1/todos/stats')).json.body.total).toBe(1)
+    expect((await c.call(todoById.GET, 'GET', '/x', undefined, p)).status).toBe(404)
+    expect((await c.call(todoById.PATCH, 'PATCH', '/x', { completed: true }, p)).status).toBe(404)
+    expect((await c.call(subtask, 'PATCH', '/x', { done: true }, { id: t._id, subtaskId: t.subtasks[0]._id })).status).toBe(404)
+    expect((await c.call(todoById.DELETE, 'DELETE', '/x', undefined, p)).status).toBe(404) // already in trash
+
+    const inTrash = (await c.call(trash.GET, 'GET', '/api/v1/todos/trash')).json.body.todos
+    expect(inTrash).toHaveLength(1)
+    expect(inTrash[0]).toMatchObject({ title: 'Binned', tags: ['x'] })
+    expect(inTrash[0].deletedAt).toBeTruthy()
+    expect(inTrash[0].userId).toBeUndefined()
+  })
+
+  it('restores a task exactly as it was', async () => {
+    const { c } = await signedIn()
+    const t = await add(c, { title: 'Come back', priority: 'high', dueDate: '2030-01-02', pinned: true })
+    await c.call(todoById.DELETE, 'DELETE', '/x', undefined, { id: t._id })
+    const res = await c.call(restore, 'POST', '/x', undefined, { id: t._id })
+    expect(res.status).toBe(200)
+    expect(res.json.body).toMatchObject({ title: 'Come back', priority: 'high', dueDate: '2030-01-02', pinned: true, deletedAt: null })
+    expect(await titles(c, '')).toEqual(['Come back'])
+    expect(await trashTitles(c)).toEqual([])
+    // A live task can't be "restored"
+    expect((await c.call(restore, 'POST', '/x', undefined, { id: t._id })).status).toBe(404)
+  })
+
+  it('deletes forever only from the trash, and empties the trash', async () => {
+    const { c } = await signedIn()
+    const a = await add(c, { title: 'A' })
+    const b = await add(c, { title: 'B' })
+    const live = await add(c, { title: 'Live' })
+    // A live task can't skip the trash.
+    expect((await c.call(forever, 'DELETE', '/x', undefined, { id: live._id })).status).toBe(404)
+
+    await c.call(todoById.DELETE, 'DELETE', '/x', undefined, { id: a._id })
+    await new Promise(r => setTimeout(r, 5)) // distinct deletedAt timestamps
+    await c.call(todoById.DELETE, 'DELETE', '/x', undefined, { id: b._id })
+    expect(await trashTitles(c)).toEqual(['B', 'A']) // most recently deleted first
+
+    expect((await c.call(forever, 'DELETE', '/x', undefined, { id: a._id })).status).toBe(200)
+    expect(await trashTitles(c)).toEqual(['B'])
+    expect((await c.call(restore, 'POST', '/x', undefined, { id: a._id })).status).toBe(404) // gone for good
+
+    const emptied = await c.call(trash.DELETE, 'DELETE', '/api/v1/todos/trash')
+    expect(emptied.json.body.deletedCount).toBe(1)
+    expect(await trashTitles(c)).toEqual([])
+    expect(FakeTodo.all().map(t => t.title)).toEqual(['Live'])
+  })
+
+  it("keeps each user's trash private", async () => {
+    const a = await signedIn()
+    const b = await signedIn()
+    const t = await add(a.c, { title: 'Secret' })
+    await a.c.call(todoById.DELETE, 'DELETE', '/x', undefined, { id: t._id })
+
+    expect(await trashTitles(b.c)).toEqual([])
+    expect((await b.c.call(restore, 'POST', '/x', undefined, { id: t._id })).status).toBe(404)
+    expect((await b.c.call(forever, 'DELETE', '/x', undefined, { id: t._id })).status).toBe(404)
+    expect((await b.c.call(trash.DELETE, 'DELETE', '/api/v1/todos/trash')).json.body.deletedCount).toBe(0)
+    expect(await trashTitles(a.c)).toEqual(['Secret'])
+    expect((await new TestClient().call(trash.GET, 'GET', '/api/v1/todos/trash')).status).toBe(401)
+  })
+
+  it('deleting the account also deletes the trash', async () => {
+    const { c } = await signedIn()
+    const t = await add(c, { title: 'Trashed' })
+    await c.call(todoById.DELETE, 'DELETE', '/x', undefined, { id: t._id })
+    await c.call(usersMe.DELETE, 'DELETE', '/api/v1/users/me', { password: 'supersecret1' })
+    expect(FakeTodo.all()).toHaveLength(0)
   })
 })
 
