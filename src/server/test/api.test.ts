@@ -22,6 +22,7 @@ const stats = (await import('@/app/api/v1/todos/stats/route')).GET
 const completed = (await import('@/app/api/v1/todos/completed/route')).DELETE
 const todoById = await import('@/app/api/v1/todos/[id]/route')
 const subtask = (await import('@/app/api/v1/todos/[id]/subtasks/[subtaskId]/route')).PATCH
+const avatar = await import('@/app/api/v1/users/me/avatar/route')
 const googleStart = (await import('@/app/api/v1/auth/google/route')).GET
 const googleCallback = (await import('@/app/api/v1/auth/google/callback/route')).GET
 
@@ -174,6 +175,16 @@ describe('profile', () => {
     expect((await new TestClient().call(login, 'POST', '/api/v1/auth/login', { identifier: user.username, password: 'brandnew123' })).status).toBe(200)
   })
 
+  it('reports hasPassword from the password itself, even without the stored flag', async () => {
+    // Accounts created before the hasPassword field existed have no flag.
+    const { c, user } = await signedIn()
+    const doc = FakeUser.all().find(u => String(u._id) === user._id)!
+    delete doc.hasPassword
+    expect((await c.call(me, 'GET', '/api/v1/auth/me')).json.body.hasPassword).toBe(true)
+    const patched = await c.call(usersMe.PATCH, 'PATCH', '/api/v1/users/me', { bio: 'hi' })
+    expect(patched.json.body.hasPassword).toBe(true)
+  })
+
   it('deletes the account and all its tasks', async () => {
     const { c } = await signedIn()
     await add(c, { title: 'Goes away' })
@@ -182,6 +193,63 @@ describe('profile', () => {
     expect(FakeUser.all()).toHaveLength(0)
     expect(FakeTodo.all()).toHaveLength(0)
     expect((await c.call(me, 'GET', '/api/v1/auth/me')).status).toBe(401)
+  })
+})
+
+describe('profile photo', () => {
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4])
+  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 9, 9, 9])
+  const webp = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 7])
+  const url = '/api/v1/users/me/avatar'
+
+  it('uploads, replaces and removes a photo; only the owner can fetch it', async () => {
+    const { c, user } = await signedIn()
+    expect(user.avatarUrl).toBeNull()
+
+    const up = await c.upload(avatar.PUT, url, png, 'image/png')
+    expect(up.status).toBe(200)
+    expect(up.json.body.avatarUrl).toMatch(/^\/api\/v1\/users\/me\/avatar\?v=\d+$/)
+    expect(up.json.body.avatar).toBeUndefined() // bytes never in the JSON
+    const got = await c.raw(avatar.GET, 'GET', url)
+    expect(got.status).toBe(200)
+    expect(got.headers.get('content-type')).toBe('image/png')
+    expect(new Uint8Array(await got.arrayBuffer())).toEqual(png)
+
+    // Replace: the type comes from the bytes, not the header the browser sent.
+    expect((await c.upload(avatar.PUT, url, jpeg, 'image/png')).status).toBe(200)
+    expect((await c.raw(avatar.GET, 'GET', url)).headers.get('content-type')).toBe('image/jpeg')
+    expect((await c.upload(avatar.PUT, url, webp, 'image/webp')).status).toBe(200)
+    expect((await c.call(me, 'GET', '/api/v1/auth/me')).json.body.avatarUrl).not.toBeNull()
+
+    // Another user never sees it (the route only ever serves your own photo).
+    const { c: other } = await signedIn()
+    expect((await other.raw(avatar.GET, 'GET', url)).status).toBe(404)
+    expect((await new TestClient().raw(avatar.GET, 'GET', url)).status).toBe(401)
+    expect((await new TestClient().upload(avatar.PUT, url, png, 'image/png')).status).toBe(401)
+
+    const removed = await c.call(avatar.DELETE, 'DELETE', url)
+    expect(removed.json.body.avatarUrl).toBeNull()
+    expect((await c.raw(avatar.GET, 'GET', url)).status).toBe(404)
+  })
+
+  it('checks the file type and size on the server', async () => {
+    const { c } = await signedIn()
+    const script = new TextEncoder().encode('<svg onload="alert(1)"></svg>')
+    expect((await c.upload(avatar.PUT, url, script, 'image/png')).status).toBe(415)
+    const gif = new TextEncoder().encode('GIF89a......')
+    expect((await c.upload(avatar.PUT, url, gif, 'image/gif')).status).toBe(415)
+    expect((await c.upload(avatar.PUT, url, new Uint8Array(), 'image/png')).status).toBe(400)
+    const huge = new Uint8Array(2 * 1024 * 1024 + 1)
+    huge.set(png)
+    expect((await c.upload(avatar.PUT, url, huge, 'image/png')).status).toBe(413)
+    expect((await c.call(me, 'GET', '/api/v1/auth/me')).json.body.avatarUrl).toBeNull()
+  })
+
+  it('is deleted with the account', async () => {
+    const { c } = await signedIn()
+    await c.upload(avatar.PUT, url, png, 'image/png')
+    await c.call(usersMe.DELETE, 'DELETE', '/api/v1/users/me', { password: 'supersecret1' })
+    expect(FakeUser.all()).toHaveLength(0)
   })
 })
 

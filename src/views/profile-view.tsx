@@ -8,12 +8,12 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { format, parseISO } from 'date-fns'
 import { toast } from 'react-toastify'
 import PageWrapper from '@/components/layout/page-wrapper'
-import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { PasswordInput } from '@/components/ui/password-input'
 import { Field, Textarea } from '@/components/ui/field'
 import { UsernameStatus } from '@/components/auth/username-status'
+import { AvatarUpload } from '@/components/profile/avatar-upload'
 import { useCurrentUser } from '@/components/guards/require-auth'
 import { authKeys } from '@/hooks/auth/use-auth'
 import { useChangePassword, useDeleteAccount, useUpdateProfile } from '@/hooks/profile/use-profile'
@@ -208,9 +208,9 @@ export default function ProfileView() {
 
   return (
     <PageWrapper size="wide">
-      <div className="flex items-center gap-5">
-        <Avatar name={user.fullName} seed={user.username} size="lg" />
-        <div className="min-w-0">
+      <div className="flex items-start gap-5">
+        <AvatarUpload user={user} />
+        <div className="min-w-0 pt-2">
           <h1 className="truncate font-display text-3xl font-extrabold tracking-[-0.03em]">{user.fullName}</h1>
           <p className="truncate text-muted-foreground">@{user.username}</p>
           <p className="mt-1 flex flex-wrap items-center gap-2 text-[13px] text-muted-foreground">
