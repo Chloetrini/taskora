@@ -503,6 +503,14 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
 - **Cards:** `rounded-lg border bg-surface`, pinned cards get a `border-primary/40`
   outline, soft primary shadow on hover. Pills (category tabs) are `rounded-full`;
   the selected pill is filled `bg-primary`.
+- **Toasts:** `ToastContainer` sits **top-right, just below the navbar** (`providers.tsx`
+  + the `.Toastify__toast-container--top-right` rule in `globals.css`), so they never
+  cover New task or the avatar menu; full width at the top on phones. Every user-visible
+  change gets one, reusing the button's verb: task added, updated, completed / marked as
+  to do, pinned / unpinned, moved to trash, restored, deleted forever; profile updated,
+  password changed / set, photo updated / removed; logged in / out, account deleted.
+  Failures use `toast.error(error.message)` unless the error is shown on a form field.
+  Subtask ticks are intentionally silent (too frequent).
 - Motion otherwise minimal; `prefers-reduced-motion` disables all transitions globally.
 - **Layout:** centred column (`PageWrapper`: narrow 2xl for forms/profile, default 4xl for the dashboard, wide 6xl for landing and the task grid), left-aligned text.
 - **Copy:** sentence case, plain verbs. Buttons say what they do ("Add task",

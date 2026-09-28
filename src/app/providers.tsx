@@ -20,7 +20,7 @@ export default function Providers({ children }: { children: React.ReactNode }) {
     <ThemeProvider>
       <QueryClientProvider client={queryClient}>
         {children}
-        <ToastContainer position="bottom-center" autoClose={2500} hideProgressBar newestOnTop closeOnClick pauseOnFocusLoss={false} theme="light" transition={Slide} />
+        <ToastContainer position="top-right" autoClose={2500} hideProgressBar newestOnTop closeOnClick pauseOnFocusLoss={false} theme="light" transition={Slide} />
       </QueryClientProvider>
     </ThemeProvider>
   )

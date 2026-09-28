@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { CalendarDays, ListChecks, Pencil, Pin, Trash2 } from 'lucide-react'
+import { toast } from 'react-toastify'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { DUE_TONE, TodoCheckbox } from '@/components/todos/todo-item'
 import { CATEGORY_META, PRIORITY_META } from '@/constants/todo'
@@ -49,7 +50,7 @@ export default function TodoCard({ todo, onTagClick }: { todo: Todo; onTagClick?
         </div>
         <button
           type="button"
-          onClick={() => updateTodo.mutate({ id: todo._id, data: { pinned: !todo.pinned } })}
+          onClick={() => updateTodo.mutate({ id: todo._id, data: { pinned: !todo.pinned } }, { onSuccess: () => toast.success(todo.pinned ? 'Task unpinned' : 'Task pinned') })}
           aria-label={todo.pinned ? `Unpin "${todo.title}"` : `Pin "${todo.title}"`}
           title={todo.pinned ? 'Unpin' : 'Pin to top'}
           className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-primary-soft hover:text-foreground"
@@ -62,7 +63,7 @@ export default function TodoCard({ todo, onTagClick }: { todo: Todo; onTagClick?
 
       {/* Title + notes */}
       <div className="flex items-start gap-3">
-        <TodoCheckbox todo={todo} onToggle={() => updateTodo.mutate({ id: todo._id, data: { completed: !todo.completed } })} />
+        <TodoCheckbox todo={todo} onToggle={() => updateTodo.mutate({ id: todo._id, data: { completed: !todo.completed } }, { onSuccess: () => toast.success(todo.completed ? 'Task marked as to do' : 'Task completed') })} />
         <div className="min-w-0 flex-1">
           <h3 className={cn('text-base leading-snug font-semibold break-words', todo.completed && 'text-muted-foreground')}>
             <span className="ink-strike" data-done={todo.completed}>

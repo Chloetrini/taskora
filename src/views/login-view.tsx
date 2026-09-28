@@ -3,6 +3,7 @@
 import { SITE } from '@/constants/site'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
+import { toast } from 'react-toastify'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { Button } from '@/components/ui/button'
@@ -37,7 +38,12 @@ export default function LoginView({ googleEnabled }: { googleEnabled: boolean })
   } = useForm<LoginFormValues>({ resolver: zodResolver(loginSchema), defaultValues: { identifier: '', password: '' } })
 
   const onSubmit = (values: LoginFormValues) =>
-    login.mutate(values, { onSuccess: () => router.replace(safeNextPath(next)) })
+    login.mutate(values, {
+      onSuccess: () => {
+        toast.success('Logged in')
+        router.replace(safeNextPath(next))
+      },
+    })
 
   return (
     <>

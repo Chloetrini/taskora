@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { CalendarDays, ChevronDown, ListChecks, Pencil, Pin, Trash2 } from 'lucide-react'
+import { toast } from 'react-toastify'
 import { Button } from '@/components/ui/button'
 import { CATEGORY_META, PRIORITY_META } from '@/constants/todo'
 import { cn, describeDueDate, type DueTone } from '@/lib/utils'
@@ -53,7 +54,7 @@ export default function TodoItem({ todo, onTagClick }: { todo: Todo; onTagClick?
   return (
     <li className={cn('group px-4 py-3.5', todo.pinned && !todo.completed && 'bg-primary-soft/35')}>
       <div className="flex items-start gap-3">
-        <TodoCheckbox todo={todo} onToggle={() => updateTodo.mutate({ id: todo._id, data: { completed: !todo.completed } })} />
+        <TodoCheckbox todo={todo} onToggle={() => updateTodo.mutate({ id: todo._id, data: { completed: !todo.completed } }, { onSuccess: () => toast.success(todo.completed ? 'Task marked as to do' : 'Task completed') })} />
 
         <div className="min-w-0 flex-1">
           <p className={cn('text-[15px] leading-snug font-medium break-words', todo.completed && 'text-muted-foreground')}>
@@ -138,7 +139,7 @@ export default function TodoItem({ todo, onTagClick }: { todo: Todo; onTagClick?
           <Button
             variant="ghost"
             size="icon-sm"
-            onClick={() => updateTodo.mutate({ id: todo._id, data: { pinned: !todo.pinned } })}
+            onClick={() => updateTodo.mutate({ id: todo._id, data: { pinned: !todo.pinned } }, { onSuccess: () => toast.success(todo.pinned ? 'Task unpinned' : 'Task pinned') })}
             aria-label={todo.pinned ? `Unpin "${todo.title}"` : `Pin "${todo.title}"`}
             title={todo.pinned ? 'Unpin' : 'Pin to top'}
           >

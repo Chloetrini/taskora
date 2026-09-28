@@ -125,6 +125,10 @@
   --toastify-icon-color-error: var(--destructive);
   --toastify-font-family: var(--font-sans);
 }
+/* Sit just below the 4rem navbar so toasts never cover New task or the avatar menu. */
+.Toastify .Toastify__toast-container--top-right {
+  top: calc(4.5rem + env(safe-area-inset-top));
+}
 .Toastify .Toastify__toast {
   background: var(--surface);
   color: var(--foreground);
