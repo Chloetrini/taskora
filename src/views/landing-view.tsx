@@ -42,7 +42,7 @@ export default function HomeView() {
               Get it out of your head and onto a list.
             </h1>
             <p className="mt-5 max-w-xl text-lg leading-relaxed text-muted-foreground">
-              {SITE.name} is a to-do list with notes, subtasks, tags and filters. Sign up in seconds and keep every task in one place.
+              {SITE.name} is a to-do list with notes, subtasks and filters. Sign up in seconds and keep every task in one place.
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               {user ? (
