@@ -350,7 +350,7 @@ Errors may also carry a machine-readable `"code"` (`email_not_verified`, `invali
 | `DELETE /todos/trash` | ✓ | – | `{ deletedCount }` — empties the trash (permanent) |
 | `POST /todos/[id]/restore` | ✓ | – | task (404 unless it's in the trash) |
 | `DELETE /todos/[id]/permanent` | ✓ | – | `{ _id }` (404 unless it's in the trash) |
-| `GET /api/health` | – | – | `{ status, database, email: 'configured' \| 'not configured' }` |
+| `GET /api/health` | – | `?check=email` (optional) | `{ status, database, email: 'configured' \| 'not configured' }`; with `?check=email` also `emailCheck` (see Section 4.5c) |
 
 `today` is the viewer's own `YYYY-MM-DD` (the client always sends it). Due
 filters and stats are calendar-day based and the server can't know the user's timezone.
@@ -435,6 +435,15 @@ Files: `controllers/email-auth.controller.ts` (verify, resend, forgot, reset),
   through Brevo can land in spam or be rejected. Verify a domain in Brevo (add its DNS records) and
   send from an address on it as soon as there is one. A provider failure at sign-up doesn't lose the
   account: the response says `verificationSent: false` and the page offers Resend.
+
+**Diagnosing "I'm not getting emails".** Open `/api/health?check=email`. It asks Brevo (read-only, nothing is
+sent, 5 calls per 15 min per IP) and answers `apiKey` (valid / rejected), `sender` (is `EMAIL_FROM` an active
+verified sender), `transactional` (has Brevo switched sending on) and a plain-language `hint`. Two things it
+can't see: a message Brevo accepted but a mailbox filtered (check spam and Brevo → Transactional → Logs), and
+an address with no account (forgot-password answers 200 and sends nothing on purpose). In the Vercel log a
+request that tried to send shows an outgoing call to `api.brevo.com` under **External APIs**; **"No outgoing
+requests" means nothing was sent**. Brevo's usual blockers: the account's *Authorised IPs* setting (Vercel's IPs
+change, so blocking must be off), an unverified sender, or transactional sending not yet activated.
 
 ### 4.6 Username bloom filter (`server/services/username-bloom.service.ts`)
 
@@ -583,8 +592,9 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
   mode with no image file. It contains **no dates or live data** — the landing
   page is prerendered, so anything time-based would mismatch on hydration.
 - **Auth pages:** one centred card (`rounded-xl border bg-surface`, max-w-md) with
-  the logo directly above it — never at the far top of the page. Heading and
-  subtitle centred; the form first, then an "or" divider, then the Google button.
+  the logo directly above it — never at the far top of the page. Heading centred with
+  no tagline under it on login/register (the form starts straight away); the form first,
+  then an "or" divider, then the Google button.
 - **Modals:** `components/ui/modal.tsx` wraps the native `<dialog>` (`showModal()`):
   focus trap, Esc, backdrop click and `::backdrop` blur for free. Use it for every
   modal; don't hand-roll overlays.
@@ -668,7 +678,7 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
 
 ## 8. Testing
 
-- `npm test` runs `src/server/test/api.test.ts` (62 tests): bloom filter
+- `npm test` runs `src/server/test/api.test.ts` (73 tests): bloom filter
   correctness, auth, sessions, forged cookies, rate limiting, profile,
   username changes, password change signing out other devices, account
   deletion, Google sign-in (create, username clash, link by email, find by id,
@@ -681,7 +691,8 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
   dev vs prod, APP_URL not Host, HTML escaping, Google verifying and discarding a stranger's
   password), forgot / reset (generic answers, all devices signed out, weak password doesn't burn
   the link, wrong-kind tokens, per-address limit), pending email changes, the special-character
-  rule, task privacy, filters, sorting, stats, and validation.
+  rule, logout not touching the database, the `/api/health?check=email` diagnostics (healthy, blocked IP,
+  bad key, unverified sender, transactional off, unconfigured, unreachable, rate limit), task privacy, filters, sorting, stats, and validation.
 - **Test helpers:** every `TestClient` gets its own IP (per-IP rate limits don't couple people);
   `signedIn()` registers, marks the address verified, then logs in; `beforeEach` stubs Brevo's
   HTTP API into `outbox` (`lastEmail`, `tokenOf`, `sentTo`). New code that sends mail is tested
@@ -772,6 +783,9 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
 - `structuredClone` strips the prototype from Mongoose `ObjectId`s (String(id)
   breaks) — the fake model uses its own `clone`.
 - Env vars are read lazily (`env()`), so `next build` works with no secrets.
+- **`route()` connects to MongoDB before running the handler.** A handler that never touches the
+  database must not use it: on a cold serverless start the connection takes seconds. `logout` is
+  exported bare (`export const POST = logout`) for this reason; a test asserts it never calls `connectDB`.
 - `SESSION_SECRET` under 32 characters stops every login route. In development
   the 500 response carries a `devDetail` field (and the terminal logs it) saying
   exactly what's wrong — via `describeError` in `server/lib/http.ts`, which also

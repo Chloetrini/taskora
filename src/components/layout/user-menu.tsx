@@ -65,7 +65,7 @@ export default function UserMenu({ user }: { user: User }) {
             disabled={logout.isPending}
             className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-sm text-destructive hover:bg-destructive/10"
           >
-            <LogOut className="size-4" /> Log out
+            <LogOut className="size-4" /> {logout.isPending ? 'Logging out…' : 'Log out'}
           </button>
         </div>
       )}

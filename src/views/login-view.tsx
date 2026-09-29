@@ -54,7 +54,6 @@ export default function LoginView({ googleEnabled }: { googleEnabled: boolean })
   return (
     <>
       <h1 className="text-center font-display text-3xl font-bold tracking-tight">Welcome back</h1>
-      <p className="mt-1.5 text-center text-sm text-muted-foreground">Log in to see your tasks.</p>
 
       {(login.isError || oauthError) && (
         <div role="alert" className="mt-6 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

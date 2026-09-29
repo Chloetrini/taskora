@@ -59,8 +59,6 @@ export default function RegisterView({ googleEnabled }: { googleEnabled: boolean
   return (
     <>
       <h1 className="text-center font-display text-3xl font-bold tracking-tight">Create your account</h1>
-      <p className="mt-1.5 text-center text-sm text-muted-foreground">It takes less than a minute.</p>
-
 
       <form onSubmit={handleSubmit(onSubmit)} noValidate className="mt-6 grid gap-4">
         <Field id="fullName" label="Full name" error={errors.fullName?.message}>

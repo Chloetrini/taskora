@@ -2,10 +2,11 @@ import bcrypt from 'bcryptjs'
 import { NextRequest } from 'next/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('@/server/config/db', () => ({ connectDB: async () => undefined }))
+vi.mock('@/server/config/db', () => ({ connectDB: vi.fn(async () => undefined) }))
 vi.mock('@/server/models/user.model', async () => ({ default: (await import('./fake-model')).FakeUser }))
 vi.mock('@/server/models/todo.model', async () => ({ default: (await import('./fake-model')).FakeTodo }))
 
+const { connectDB } = await import('@/server/config/db')
 const { FakeUser, FakeTodo } = await import('./fake-model')
 const { TestClient } = await import('./client')
 const { resetUsernameFilter, BloomFilter } = await import('@/server/services/username-bloom.service')
@@ -32,6 +33,7 @@ const verifyEmail = (await import('@/app/api/v1/auth/verify-email/route')).POST
 const resendVerification = (await import('@/app/api/v1/auth/resend-verification/route')).POST
 const forgotPassword = (await import('@/app/api/v1/auth/forgot-password/route')).POST
 const resetPassword = (await import('@/app/api/v1/auth/reset-password/route')).POST
+const health = (await import('@/app/api/health/route')).GET
 const googleStart = (await import('@/app/api/v1/auth/google/route')).GET
 const googleCallback = (await import('@/app/api/v1/auth/google/callback/route')).GET
 
@@ -220,6 +222,18 @@ describe('auth', () => {
     expect(out.cookieSet?.maxAge).toBe(0)
     expect((await c.call(me, 'GET', '/api/v1/auth/me')).status).toBe(401)
     expect((await c.call(todos.GET, 'GET', '/api/v1/todos')).status).toBe(401)
+  })
+
+  it('logging out never touches the database (so it is instant, even on a cold start)', async () => {
+    const { c } = await signedIn()
+    vi.mocked(connectDB).mockClear()
+    const out = await c.call(logout, 'POST', '/api/v1/auth/logout')
+    expect(out.status).toBe(200)
+    expect(out.cookieSet?.maxAge).toBe(0)
+    expect(connectDB).not.toHaveBeenCalled()
+    // A request that does read data connects, so the assertion above means something.
+    expect((await c.call(me, 'GET', '/api/v1/auth/me')).status).toBe(401) // logged out
+    expect(connectDB).toHaveBeenCalled()
   })
 
   it('rejects a forged cookie and clears it', async () => {
@@ -676,6 +690,107 @@ describe('forgot and reset password', () => {
     const statuses: number[] = []
     for (let i = 0; i < 4; i++) statuses.push((await c.call(forgotPassword, 'POST', '/x', { email: user.email })).status)
     expect(statuses).toEqual([200, 200, 200, 429])
+  })
+})
+
+describe('email setup check (GET /api/health?check=email)', () => {
+  type Check = { configured: boolean; apiKey: string; sender: string; transactional: string; ok: boolean; hint: string }
+  const get = (qs = '?check=email', client = new TestClient()) =>
+    client.call(health as never, 'GET', `/api/health${qs}`).then(r => ({ status: r.status, json: r.json as unknown as { email: string; emailCheck?: Check; message?: string } }))
+
+  /** Brevo answers by path: /account and /senders. Records every call. */
+  const calls: { path: string; key: string }[] = []
+  function brevo(replies: { account: [number, object]; senders: [number, object] }) {
+    calls.length = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: { headers?: Record<string, string> }) => {
+        const path = String(url).split('/v3/')[1] as 'account' | 'senders'
+        calls.push({ path, key: init?.headers?.['api-key'] ?? '' })
+        const [status, body] = replies[path]
+        return new Response(JSON.stringify(body), { status })
+      })
+    )
+  }
+  const goodAccount: [number, object] = [200, { relay: { enabled: true }, plan: [{ type: 'free' }] }]
+  const goodSenders: [number, object] = [200, { senders: [{ id: 1, name: 'x', email: 'Sender@Example.com', active: true }] }]
+
+  it('reports a healthy setup, sends nothing, and never echoes the API key', async () => {
+    brevo({ account: goodAccount, senders: goodSenders })
+    const res = await get()
+    expect(res.status).toBe(200)
+    expect(res.json.emailCheck).toMatchObject({ configured: true, apiKey: 'valid', sender: 'verified', transactional: 'enabled', ok: true })
+    expect(calls.map(c => c.path).sort()).toEqual(['account', 'senders'])
+    expect(calls.every(c => c.key === 'test-key')).toBe(true)
+    expect(outbox).toHaveLength(0) // a check is read-only
+    expect(JSON.stringify(res.json)).not.toContain('test-key')
+  })
+
+  it('says when Brevo blocks the server’s IP address (the usual Vercel problem)', async () => {
+    const blocked = { message: 'We have detected you are using an unrecognised IP address 76.76.21.9. If you performed this action make sure to add the new IP address in this link: https://app.brevo.com/security/authorised_ips', code: 'unauthorized' }
+    brevo({ account: [401, blocked], senders: [401, blocked] })
+    const { json } = await get()
+    expect(json.emailCheck).toMatchObject({ apiKey: 'rejected', ok: false })
+    expect(json.emailCheck!.hint).toContain('Authorised IPs')
+    expect(JSON.stringify(json)).not.toContain('76.76.21.9') // Brevo's raw message isn't passed on
+  })
+
+  it('says when the API key itself is wrong', async () => {
+    brevo({ account: [401, { message: 'Key not found' }], senders: [401, { message: 'Key not found' }] })
+    const { json } = await get()
+    expect(json.emailCheck).toMatchObject({ apiKey: 'rejected', ok: false })
+    expect(json.emailCheck!.hint).toMatch(/API key/)
+  })
+
+  it('says when EMAIL_FROM is not a verified sender (missing, or present but inactive)', async () => {
+    brevo({ account: goodAccount, senders: [200, { senders: [{ email: 'someone-else@example.com', active: true }] }] })
+    let { json } = await get()
+    expect(json.emailCheck).toMatchObject({ apiKey: 'valid', sender: 'not verified', ok: false })
+    expect(json.emailCheck!.hint).toContain('sender@example.com')
+
+    brevo({ account: goodAccount, senders: [200, { senders: [{ email: 'sender@example.com', active: false }] }] })
+    json = (await get()).json
+    expect(json.emailCheck).toMatchObject({ sender: 'not verified', ok: false })
+  })
+
+  it('says when Brevo has not activated transactional email', async () => {
+    brevo({ account: [200, { relay: { enabled: false } }], senders: goodSenders })
+    const { json } = await get()
+    expect(json.emailCheck).toMatchObject({ sender: 'verified', transactional: 'not enabled', ok: false })
+    expect(json.emailCheck!.hint).toMatch(/activate/i)
+  })
+
+  it('says what to set when nothing is configured, without calling Brevo', async () => {
+    vi.stubEnv('BREVO_API_KEY', '')
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const { json } = await get()
+    expect(json.email).toBe('not configured')
+    expect(json.emailCheck).toMatchObject({ configured: false, ok: false })
+    expect(json.emailCheck!.hint).toMatch(/no quotation marks/)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('copes with Brevo being unreachable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network down') }))
+    const { status, json } = await get()
+    expect(status).toBe(200)
+    expect(json.emailCheck).toMatchObject({ apiKey: 'unknown', ok: false })
+  })
+
+  it('a plain health check never calls Brevo; the deep check is rate limited', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const plain = await get('')
+    expect(plain.json).toMatchObject({ email: 'configured' })
+    expect(plain.json.emailCheck).toBeUndefined()
+    expect(fetchSpy).not.toHaveBeenCalled()
+
+    brevo({ account: goodAccount, senders: goodSenders })
+    const same = new TestClient()
+    const statuses: number[] = []
+    for (let i = 0; i < 6; i++) statuses.push((await get('?check=email', same)).status)
+    expect(statuses).toEqual([200, 200, 200, 200, 200, 429])
   })
 })
 
