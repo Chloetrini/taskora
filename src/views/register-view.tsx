@@ -1,8 +1,7 @@
 'use client'
 
-import { SITE } from '@/constants/site'
 import Link from 'next/link'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useSearchParams } from 'next/navigation'
 import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { toast } from 'react-toastify'
@@ -11,16 +10,16 @@ import { Input } from '@/components/ui/input'
 import { PasswordInput } from '@/components/ui/password-input'
 import { Field } from '@/components/ui/field'
 import { UsernameStatus } from '@/components/auth/username-status'
+import { PasswordRules } from '@/components/auth/password-rules'
+import { CheckEmail } from '@/components/auth/check-email'
 import { useRegister } from '@/hooks/auth/use-auth'
 import { useUsernameAvailability } from '@/hooks/shared/use-username-availability'
 import { registerSchema, type RegisterFormValues } from '@/lib/schema'
 import { applyServerErrors } from '@/lib/form-errors'
-import { safeNextPath } from '@/lib/utils'
 import { GoogleButton, OrDivider } from '@/components/auth/google-button'
 
 export default function RegisterView({ googleEnabled }: { googleEnabled: boolean }) {
   const registerUser = useRegister()
-  const router = useRouter()
   const searchParams = useSearchParams()
   const next = searchParams.get('next')
 
@@ -36,6 +35,7 @@ export default function RegisterView({ googleEnabled }: { googleEnabled: boolean
   })
 
   const username = useWatch({ control, name: 'username' })
+  const password = useWatch({ control, name: 'password' })
   const availability = useUsernameAvailability(username)
 
   const onSubmit = (values: RegisterFormValues) => {
@@ -44,14 +44,16 @@ export default function RegisterView({ googleEnabled }: { googleEnabled: boolean
     }
     const { confirmPassword: _confirm, ...body } = values
     registerUser.mutate(body, {
-      onSuccess: res => {
-        toast.success(`Welcome to ${SITE.name}, ${res.body.fullName.split(' ')[0]}`)
-        router.replace(safeNextPath(next))
-      },
+      onSuccess: () => toast.success('Account created'),
       onError: error => {
         if (!applyServerErrors(error, setError, ['fullName', 'username', 'email', 'password'])) toast.error(error.message)
       },
     })
+  }
+
+  // Creating an account doesn't sign anyone in: the address has to be confirmed first.
+  if (registerUser.isSuccess) {
+    return <CheckEmail email={registerUser.data.body.email} sent={registerUser.data.body.verificationSent} onUseAnother={() => registerUser.reset()} />
   }
 
   return (
@@ -74,7 +76,7 @@ export default function RegisterView({ googleEnabled }: { googleEnabled: boolean
           <Input id="email" type="email" autoComplete="email" aria-invalid={!!errors.email} {...register('email')} />
         </Field>
         <div className="grid gap-4">
-          <Field id="password" label="Password" error={errors.password?.message} hint="At least 8 characters.">
+          <Field id="password" label="Password" error={errors.password?.message} hint={<PasswordRules value={password} />}>
             <PasswordInput id="password" autoComplete="new-password" aria-invalid={!!errors.password} {...register('password')} />
           </Field>
           <Field id="confirmPassword" label="Confirm password" error={errors.confirmPassword?.message}>

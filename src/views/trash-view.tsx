@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import Link from 'next/link'
 import { formatDistanceToNow, parseISO } from 'date-fns'
 import { RotateCcw, RotateCw, Trash2 } from 'lucide-react'
@@ -10,11 +10,14 @@ import { Button, buttonVariants } from '@/components/ui/button'
 import { CATEGORY_META, PRIORITY_META } from '@/constants/todo'
 import { useTrash } from '@/hooks/todos/use-todos'
 import { useDeleteForever, useEmptyTrash, useRestoreTodo } from '@/hooks/todos/use-todo-actions'
+import { useDismiss } from '@/hooks/shared/use-dismiss'
 import { cn } from '@/lib/utils'
 import type { Todo } from '@/types/todo'
 
 function TrashItem({ todo }: { todo: Todo }) {
   const [confirming, setConfirming] = useState(false)
+  const confirmRef = useRef<HTMLDivElement>(null)
+  useDismiss(confirmRef, confirming, () => setConfirming(false))
   const restore = useRestoreTodo()
   const deleteForever = useDeleteForever()
   const category = CATEGORY_META[todo.category]
@@ -39,7 +42,7 @@ function TrashItem({ todo }: { todo: Todo }) {
       </div>
 
       {confirming ? (
-        <div role="group" aria-label={`Confirm deleting "${todo.title}" forever`} className="flex items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-1.5">
+        <div ref={confirmRef} role="group" aria-label={`Confirm deleting "${todo.title}" forever`} className="flex items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-1.5">
           <p className="text-sm font-medium">Delete forever?</p>
           <div className="flex gap-1.5">
             <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
@@ -66,7 +69,9 @@ function TrashItem({ todo }: { todo: Todo }) {
 
 function EmptyTrashButton({ count }: { count: number }) {
   const [confirming, setConfirming] = useState(false)
+  const confirmRef = useRef<HTMLDivElement>(null)
   const emptyTrash = useEmptyTrash()
+  useDismiss(confirmRef, confirming, () => setConfirming(false))
 
   if (!confirming) {
     return (
@@ -76,7 +81,7 @@ function EmptyTrashButton({ count }: { count: number }) {
     )
   }
   return (
-    <div role="group" aria-label="Confirm emptying the trash" className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-1.5">
+    <div ref={confirmRef} role="group" aria-label="Confirm emptying the trash" className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-1.5">
       <p className="text-sm font-medium">Delete {count === 1 ? '1 task' : `all ${count} tasks`} forever?</p>
       <div className="flex gap-1.5">
         <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>

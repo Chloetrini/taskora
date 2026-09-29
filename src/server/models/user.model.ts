@@ -11,6 +11,16 @@ export interface IUser {
   hasPassword: boolean
   googleId?: string
   bio: string
+  // False until the address is confirmed by link. Accounts made before email
+  // verification existed have no value at all: treat `undefined` as verified.
+  emailVerified?: boolean
+  // A new address awaiting confirmation. `email` only changes once its link is used.
+  pendingEmail?: string | null
+  // SHA-256 of the emailed token (never the token itself) + expiry. Cleared on use.
+  verifyTokenHash?: string | null
+  verifyTokenExpires?: Date | null
+  resetTokenHash?: string | null
+  resetTokenExpires?: Date | null
   // Profile photo bytes live on the user (select: false) so deleting the
   // account deletes the photo too. avatarUpdatedAt versions the image URL.
   avatar?: { data: Buffer; contentType: string } | null
@@ -31,6 +41,12 @@ const userSchema = new Schema<IUser>(
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     password: { type: String, select: false },
     hasPassword: { type: Boolean, default: false },
+    emailVerified: { type: Boolean, default: false },
+    pendingEmail: { type: String, lowercase: true, trim: true, default: null },
+    verifyTokenHash: { type: String, select: false, index: true, default: null },
+    verifyTokenExpires: { type: Date, select: false, default: null },
+    resetTokenHash: { type: String, select: false, index: true, default: null },
+    resetTokenExpires: { type: Date, select: false, default: null },
     // Google's stable account id ("sub"). Sparse unique: only Google users have one.
     googleId: { type: String, unique: true, sparse: true, select: false },
     bio: { type: String, trim: true, maxlength: 160, default: '' },

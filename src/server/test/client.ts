@@ -1,7 +1,7 @@
 import { NextRequest, type NextResponse } from 'next/server'
 
 type Handler = (req: NextRequest, ctx: { params: Promise<any> }) => Promise<NextResponse>
-type Json = { success: boolean; message: string; body?: any; details?: { path: string; message: string }[] }
+type Json = { success: boolean; message: string; code?: string; body?: any; details?: { path: string; message: string }[] }
 
 /**
  * Calls App Router handlers directly — no server — and keeps ALL cookies
@@ -9,7 +9,10 @@ type Json = { success: boolean; message: string; body?: any; details?: { path: s
  * one person's browser.
  */
 export class TestClient {
+  static count = 0
   jar = new Map<string, string>()
+  // Each simulated browser gets its own IP, so per-IP rate limits don't couple unrelated people.
+  ip = `10.${(++TestClient.count >> 8) & 255}.${TestClient.count & 255}.1`
 
   get cookie() {
     return [...this.jar].map(([k, v]) => `${k}=${v}`).join('; ')
@@ -25,7 +28,7 @@ export class TestClient {
   async raw(handler: Handler, method: string, url: string, body?: unknown, params: Record<string, string> = {}) {
     const init: { method: string; headers: Record<string, string>; body?: string } = {
       method,
-      headers: { 'content-type': 'application/json', 'x-forwarded-for': '10.0.0.1', ...(this.jar.size ? { cookie: this.cookie } : {}) },
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': this.ip, ...(this.jar.size ? { cookie: this.cookie } : {}) },
     }
     if (body !== undefined) init.body = typeof body === 'string' ? body : JSON.stringify(body)
     const res = await handler(new NextRequest(`http://localhost${url}`, init), { params: Promise.resolve(params) })
@@ -41,7 +44,7 @@ export class TestClient {
     const res = await handler(
       new NextRequest(`http://localhost${url}`, {
         method: 'PUT',
-        headers: { 'content-type': contentType, 'x-forwarded-for': '10.0.0.1', ...(this.jar.size ? { cookie: this.cookie } : {}) },
+        headers: { 'content-type': contentType, 'x-forwarded-for': this.ip, ...(this.jar.size ? { cookie: this.cookie } : {}) },
         body: bytes,
       }),
       { params: Promise.resolve({}) }

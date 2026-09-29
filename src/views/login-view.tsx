@@ -10,8 +10,9 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { PasswordInput } from '@/components/ui/password-input'
 import { Field } from '@/components/ui/field'
-import { useLogin } from '@/hooks/auth/use-auth'
+import { useLogin, useResendVerification } from '@/hooks/auth/use-auth'
 import { loginSchema, type LoginFormValues } from '@/lib/schema'
+import { errorCode } from '@/lib/form-errors'
 import { safeNextPath } from '@/lib/utils'
 import { GoogleButton, OrDivider } from '@/components/auth/google-button'
 
@@ -26,6 +27,7 @@ const OAUTH_ERRORS: Record<string, string> = {
 
 export default function LoginView({ googleEnabled }: { googleEnabled: boolean }) {
   const login = useLogin()
+  const resend = useResendVerification()
   const router = useRouter()
   const searchParams = useSearchParams()
   const next = searchParams.get('next')
@@ -34,8 +36,12 @@ export default function LoginView({ googleEnabled }: { googleEnabled: boolean })
   const {
     register,
     handleSubmit,
+    getValues,
     formState: { errors },
   } = useForm<LoginFormValues>({ resolver: zodResolver(loginSchema), defaultValues: { identifier: '', password: '' } })
+
+  // The password was right but the address was never confirmed: offer a fresh link.
+  const needsVerification = login.isError && errorCode(login.error) === 'email_not_verified'
 
   const onSubmit = (values: LoginFormValues) =>
     login.mutate(values, {
@@ -51,11 +57,20 @@ export default function LoginView({ googleEnabled }: { googleEnabled: boolean })
       <p className="mt-1.5 text-center text-sm text-muted-foreground">Log in to see your tasks.</p>
 
       {(login.isError || oauthError) && (
-        <p role="alert" className="mt-6 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {login.isError ? login.error.message : oauthError}
-        </p>
+        <div role="alert" className="mt-6 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <p>{login.isError ? login.error.message : oauthError}</p>
+          {needsVerification && (
+            <button
+              type="button"
+              disabled={resend.isPending}
+              onClick={() => resend.mutate(getValues('identifier'), { onSuccess: res => toast.success(res.message) })}
+              className="mt-1.5 font-medium underline underline-offset-4 disabled:opacity-60"
+            >
+              {resend.isPending ? 'Sending…' : 'Resend the verification email'}
+            </button>
+          )}
+        </div>
       )}
-
 
       <form onSubmit={handleSubmit(onSubmit)} noValidate className="mt-6 grid gap-4">
         <Field id="identifier" label="Email or username" error={errors.identifier?.message}>
@@ -64,6 +79,11 @@ export default function LoginView({ googleEnabled }: { googleEnabled: boolean })
         <Field id="password" label="Password" error={errors.password?.message}>
           <PasswordInput id="password" autoComplete="current-password" aria-invalid={!!errors.password} {...register('password')} />
         </Field>
+        <div className="-mt-2 text-right">
+          <Link href="/forgot-password" className="text-[13px] font-medium text-primary hover:underline">
+            Forgot password?
+          </Link>
+        </div>
         <Button type="submit" disabled={login.isPending} className="mt-2 h-11">
           {login.isPending ? 'Logging in…' : 'Log in'}
         </Button>

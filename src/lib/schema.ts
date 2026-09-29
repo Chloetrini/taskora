@@ -19,6 +19,14 @@ export const registerSchema = z
   .refine(d => d.password === d.confirmPassword, { message: "Passwords don't match", path: ['confirmPassword'] })
 export type RegisterFormValues = z.infer<typeof registerSchema>
 
+export const forgotPasswordSchema = z.object({ email: emailField })
+export type ForgotPasswordFormValues = z.infer<typeof forgotPasswordSchema>
+
+export const resetPasswordFormSchema = z
+  .object({ newPassword: passwordField, confirmPassword: z.string() })
+  .refine(d => d.newPassword === d.confirmPassword, { message: "Passwords don't match", path: ['confirmPassword'] })
+export type ResetPasswordFormValues = z.infer<typeof resetPasswordFormSchema>
+
 export const profileSchema = z.object({ fullName: fullNameField, username: usernameField, email: emailField, bio: bioField })
 export type ProfileFormValues = z.infer<typeof profileSchema>
 

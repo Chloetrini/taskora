@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { getMe, login, logout, register } from '@/api/auth'
+import { forgotPassword, getMe, login, logout, register, resendVerification, resetPassword, verifyEmail } from '@/api/auth'
 import { ApiError } from '@/api/client'
 import type { LoginInput, RegisterInput, User } from '@/types/user'
 
@@ -38,16 +38,26 @@ export const useLogin = () => {
   })
 }
 
-export const useRegister = () => {
+/** Creates the account only. Nobody is signed in until the emailed link is used and they log in. */
+export const useRegister = () =>
+  useMutation({
+    mutationFn: (data: RegisterInput) => register(data),
+  })
+
+export const useVerifyEmail = () => {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (data: RegisterInput) => register(data),
-    onSuccess: res => {
-      queryClient.removeQueries({ predicate: q => q.queryKey[0] !== 'auth' })
-      queryClient.setQueryData(authKeys.me, res.body)
-    },
+    mutationFn: (token: string) => verifyEmail(token),
+    // A signed-in person confirming a NEW address: refresh who they are.
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: authKeys.me }),
   })
 }
+
+export const useResendVerification = () => useMutation({ mutationFn: (identifier: string) => resendVerification(identifier) })
+
+export const useForgotPassword = () => useMutation({ mutationFn: (email: string) => forgotPassword(email) })
+
+export const useResetPassword = () => useMutation({ mutationFn: (data: { token: string; newPassword: string }) => resetPassword(data) })
 
 export const useLogout = () => {
   const queryClient = useQueryClient()

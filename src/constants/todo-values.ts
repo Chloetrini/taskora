@@ -34,6 +34,10 @@ export const LIMITS = {
 export const AVATAR_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const
 export type AvatarType = (typeof AVATAR_TYPES)[number]
 
+// A "special character" is anything that isn't a letter, a digit or whitespace.
+// Shared by the API and the password rule checklist so they can't disagree.
+export const PASSWORD_SPECIAL = /[^\p{L}\p{N}\s]/u
+
 export const RESERVED_USERNAMES = [
   'admin', 'administrator', 'api', 'app', 'auth', 'dashboard', 'taskora', 'help', 'login', 'logout',
   'me', 'new', 'profile', 'register', 'root', 'settings', 'signup', 'support', 'system',

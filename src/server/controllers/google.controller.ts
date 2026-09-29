@@ -132,14 +132,38 @@ async function googleCallbackUnsafe(req: NextRequest) {
   let user = await User.findOne({ googleId: profile.sub }).select('+sessionVersion').lean()
   if (!user) {
     const byEmail = await User.findOne({ email }).select('+sessionVersion').lean()
-    if (byEmail) {
+    if (byEmail && byEmail.emailVerified === false) {
+      // Someone signed up with this address by password but never proved they own it.
+      // Google just proved the real owner is here, so the password (chosen by an
+      // unverified stranger, maybe the real owner, maybe not) is thrown away and
+      // every session/link for the account is ended. The owner can set a new one.
+      const sessionVersion = (byEmail.sessionVersion ?? 0) + 1
+      await User.updateOne(
+        { _id: byEmail._id },
+        {
+          $set: {
+            googleId: profile.sub,
+            emailVerified: true,
+            password: null,
+            hasPassword: false,
+            sessionVersion,
+            pendingEmail: null,
+            verifyTokenHash: null,
+            verifyTokenExpires: null,
+            resetTokenHash: null,
+            resetTokenExpires: null,
+          },
+        }
+      )
+      user = { ...byEmail, sessionVersion }
+    } else if (byEmail) {
       await User.updateOne({ _id: byEmail._id }, { $set: { googleId: profile.sub } })
       user = byEmail
     } else {
       const username = await generateUniqueUsername(email, profile.name)
       const name = (profile.name?.trim() || email.split('@')[0]).slice(0, 60)
       const fullName = name.length >= 2 ? name : 'Taskora user'
-      const created = await User.create({ fullName, username, email, googleId: profile.sub, hasPassword: false })
+      const created = await User.create({ fullName, username, email, googleId: profile.sub, hasPassword: false, emailVerified: true })
       addUsernameToFilter(username)
       user = { ...created.toObject(), sessionVersion: 0 }
     }

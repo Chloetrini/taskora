@@ -8,6 +8,10 @@ export interface User {
   /** False for accounts created with Google until they set a password. */
   hasPassword: boolean
   googleLinked: boolean
+  /** False until the address is confirmed from the emailed link. */
+  emailVerified: boolean
+  /** A new address waiting for its confirmation link; `email` doesn't change until it's used. */
+  pendingEmail: string | null
   /** Same-origin URL of the profile photo (versioned), or null for initials. */
   avatarUrl: string | null
   createdAt: string
@@ -19,6 +23,13 @@ export interface RegisterInput {
   username: string
   email: string
   password: string
+}
+
+/** Registering creates the account but doesn't sign in: the address must be verified first. */
+export interface RegisterResult {
+  email: string
+  /** False when the email provider failed; the page offers "Resend". */
+  verificationSent: boolean
 }
 
 export interface LoginInput {

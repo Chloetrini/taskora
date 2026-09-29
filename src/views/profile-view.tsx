@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useForm, useWatch } from 'react-hook-form'
 import { useQueryClient } from '@tanstack/react-query'
@@ -13,10 +13,13 @@ import { Input } from '@/components/ui/input'
 import { PasswordInput } from '@/components/ui/password-input'
 import { Field, Textarea } from '@/components/ui/field'
 import { UsernameStatus } from '@/components/auth/username-status'
+import { PasswordRules } from '@/components/auth/password-rules'
 import { AvatarUpload } from '@/components/profile/avatar-upload'
 import { useCurrentUser } from '@/components/guards/require-auth'
 import { authKeys } from '@/hooks/auth/use-auth'
 import { useChangePassword, useDeleteAccount, useRemoveAvatar, useUpdateProfile } from '@/hooks/profile/use-profile'
+import { useResendVerification } from '@/hooks/auth/use-auth'
+import { useDismiss } from '@/hooks/shared/use-dismiss'
 import { useTodoStats } from '@/hooks/todos/use-todos'
 import { useUsernameAvailability } from '@/hooks/shared/use-username-availability'
 import { passwordFormSchema, profileSchema, type PasswordFormValues, type ProfileFormValues } from '@/lib/schema'
@@ -30,6 +33,24 @@ function Card({ title, description, children, tone }: { title: string; descripti
       {description && <p className="mt-0.5 text-sm text-muted-foreground">{description}</p>}
       <div className="mt-5">{children}</div>
     </section>
+  )
+}
+
+/** Shown under the email field while a new address waits for its confirmation link. */
+function PendingEmail({ email, username }: { email: string; username: string }) {
+  const resend = useResendVerification()
+  return (
+    <p className="text-foreground">
+      Waiting for you to confirm <strong className="font-semibold break-all">{email}</strong>. Your email changes once you open the link we sent there.{' '}
+      <button
+        type="button"
+        disabled={resend.isPending}
+        onClick={() => resend.mutate(username, { onSuccess: res => toast.success(res.message) })}
+        className="font-medium text-primary underline underline-offset-4 disabled:opacity-60"
+      >
+        {resend.isPending ? 'Sending…' : 'Resend'}
+      </button>
+    </p>
   )
 }
 
@@ -60,7 +81,7 @@ function ProfileForm({ user }: { user: User }) {
     if (Object.keys(changes).length === 0) return
     updateProfile.mutate(changes, {
       onSuccess: res => {
-        toast.success('Profile updated')
+        toast.success(res.message) // "Profile updated", or which address we sent a link to
         reset({ fullName: res.body.fullName, username: res.body.username, email: res.body.email, bio: res.body.bio })
       },
       onError: error => {
@@ -82,7 +103,7 @@ function ProfileForm({ user }: { user: User }) {
           </div>
         </Field>
       </div>
-      <Field id="profile-email" label="Email" error={errors.email?.message}>
+      <Field id="profile-email" label="Email" error={errors.email?.message} hint={user.pendingEmail ? <PendingEmail email={user.pendingEmail} username={user.username} /> : undefined}>
         <Input id="profile-email" type="email" autoComplete="email" aria-invalid={!!errors.email} {...register('email')} />
       </Field>
       <Field id="profile-bio" label="Bio" error={errors.bio?.message} hint={`${bio.length}/160`}>
@@ -105,11 +126,14 @@ function PasswordForm({ hasPassword }: { hasPassword: boolean }) {
     handleSubmit,
     setError,
     reset,
+    control,
     formState: { errors },
   } = useForm<PasswordFormValues>({
     resolver: zodResolver(passwordFormSchema),
     defaultValues: { currentPassword: '', newPassword: '', confirmPassword: '' },
   })
+
+  const newPassword = useWatch({ control, name: 'newPassword' })
 
   const onSubmit = ({ currentPassword, newPassword }: PasswordFormValues) => {
     if (hasPassword && !currentPassword) return setError('currentPassword', { message: 'Enter your current password' })
@@ -137,7 +161,7 @@ function PasswordForm({ hasPassword }: { hasPassword: boolean }) {
         </Field>
       )}
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field id="new-password" label="New password" error={errors.newPassword?.message}>
+        <Field id="new-password" label="New password" error={errors.newPassword?.message} hint={<PasswordRules value={newPassword} />}>
           <PasswordInput id="new-password" autoComplete="new-password" aria-invalid={!!errors.newPassword} {...register('newPassword')} />
         </Field>
         <Field id="confirm-password" label="Confirm new password" error={errors.confirmPassword?.message}>
@@ -158,6 +182,13 @@ function DeleteAccount({ user }: { user: User }) {
   const router = useRouter()
   const [confirming, setConfirming] = useState(false)
   const [password, setPassword] = useState('')
+  const formRef = useRef<HTMLFormElement>(null)
+  // Backing out (Cancel, Escape, or pressing outside) also forgets what was typed.
+  const close = () => {
+    setConfirming(false)
+    setPassword('')
+  }
+  useDismiss(formRef, confirming, close)
 
   if (!confirming) {
     return (
@@ -169,6 +200,7 @@ function DeleteAccount({ user }: { user: User }) {
 
   return (
     <form
+      ref={formRef}
       noValidate
       className="grid gap-3"
       onSubmit={e => {
@@ -191,7 +223,7 @@ function DeleteAccount({ user }: { user: User }) {
         </Field>
       )}
       <div className="flex justify-end gap-2">
-        <Button variant="ghost" onClick={() => setConfirming(false)}>
+        <Button variant="ghost" onClick={close}>
           Cancel
         </Button>
         <Button type="submit" disabled={!password || deleteAccount.isPending} className="bg-destructive text-white hover:bg-destructive/90">
@@ -260,7 +292,7 @@ export default function ProfileView() {
         </Card>
         <Card
           title={user.hasPassword ? 'Password' : 'Set a password'}
-          description={user.hasPassword ? 'Use at least 8 characters.' : 'You sign in with Google. Set a password to also log in with your email or username.'}
+          description={user.hasPassword ? 'Use at least 8 characters, including a special character.' : 'You sign in with Google. Set a password to also log in with your email or username.'}
         >
           <PasswordForm hasPassword={user.hasPassword} />
         </Card>

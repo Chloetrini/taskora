@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { LogOut, UserRound } from 'lucide-react'
@@ -8,6 +8,7 @@ import { toast } from 'react-toastify'
 import type { User } from '@/types/user'
 import { Avatar } from '@/components/ui/avatar'
 import { useLogout } from '@/hooks/auth/use-auth'
+import { useDismiss } from '@/hooks/shared/use-dismiss'
 
 /**
  * Takes the user as a prop (from the navbar's useMe) instead of
@@ -20,19 +21,7 @@ export default function UserMenu({ user }: { user: User }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    if (!open) return
-    const onClick = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false)
-    }
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false)
-    document.addEventListener('mousedown', onClick)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onClick)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [open])
+  useDismiss(ref, open, () => setOpen(false))
 
   const onLogout = () => {
     logout.mutate(undefined, {

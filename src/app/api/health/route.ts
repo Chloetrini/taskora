@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import mongoose from 'mongoose'
 import { connectDB } from '@/server/config/db'
+import { emailEnv } from '@/server/config/env'
 
 export const dynamic = 'force-dynamic'
 
@@ -16,7 +17,7 @@ export async function GET() {
   }
   const healthy = database === 'connected'
   return NextResponse.json(
-    { status: healthy ? 'ok' : 'error', database, timestamp: new Date().toISOString() },
+    { status: healthy ? 'ok' : 'error', database, email: emailEnv() ? 'configured' : 'not configured', timestamp: new Date().toISOString() },
     { status: healthy ? 200 : 503 }
   )
 }

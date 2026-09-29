@@ -125,7 +125,7 @@ export function createFakeModel(options: { defaults: () => Doc; hidden?: string[
   return Model
 }
 
-export const FakeUser = createFakeModel({ defaults: () => ({ bio: '', sessionVersion: 0 }), hidden: ['password', 'sessionVersion', 'googleId', 'avatar'] })
+export const FakeUser = createFakeModel({ defaults: () => ({ bio: '', sessionVersion: 0 }), hidden: ['password', 'sessionVersion', 'googleId', 'avatar', 'verifyTokenHash', 'verifyTokenExpires', 'resetTokenHash', 'resetTokenExpires'] })
 export const FakeTodo = createFakeModel({
   defaults: () => ({ notes: '', priority: 'medium', category: 'personal', tags: [], dueDate: null, subtasks: [], pinned: false, completed: false, completedAt: null, deletedAt: null }),
 })

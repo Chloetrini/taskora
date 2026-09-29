@@ -17,3 +17,6 @@ export function applyServerErrors<T extends FieldValues>(error: unknown, setErro
   }
   return applied
 }
+
+/** The server's machine-readable reason ('email_not_verified', 'invalid_token'…), if it sent one. */
+export const errorCode = (error: unknown): string | undefined => (error instanceof ApiError ? error.code : undefined)

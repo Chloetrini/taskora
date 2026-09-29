@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import {
   LIMITS,
+  PASSWORD_SPECIAL,
   RESERVED_USERNAMES,
   TODO_CATEGORIES,
   TODO_DUE_FILTERS,
@@ -27,10 +28,13 @@ export const usernameField = z
   .regex(USERNAME_PATTERN, 'Lowercase letters, numbers and underscores, starting with a letter')
   .refine(v => !RESERVED_USERNAMES.includes(v), 'That username is reserved')
 
+// For NEW passwords only (sign-up, change, reset). Login deliberately doesn't
+// use it, so accounts made before this rule existed can still sign in.
 export const passwordField = z
   .string()
   .min(LIMITS.passwordMin, `At least ${LIMITS.passwordMin} characters`)
   .max(LIMITS.passwordMax, `${LIMITS.passwordMax} characters or fewer`)
+  .regex(PASSWORD_SPECIAL, 'Include a special character, like ! @ # $ %')
 
 export const emailField = z.string().trim().toLowerCase().email('Enter a valid email')
 export const fullNameField = z.string().trim().min(2, 'Enter your full name').max(LIMITS.fullName, `Keep it under ${LIMITS.fullName} characters`)
@@ -85,6 +89,17 @@ export const changePasswordBody = z
   .object({ currentPassword: z.string().optional(), newPassword: passwordField })
   .strict()
   .refine(d => d.currentPassword !== d.newPassword, { message: 'Use a different password', path: ['newPassword'] })
+
+// The random string from an emailed link. A wrong-shaped one gets the same message as an expired one.
+export const tokenField = z.string().trim().min(20, 'This link is invalid or has expired').max(200, 'This link is invalid or has expired')
+
+export const verifyEmailBody = z.object({ token: tokenField }).strict()
+export const resendVerificationBody = z
+  .object({ identifier: z.string().trim().toLowerCase().min(1, 'Enter your email or username') })
+  .strict()
+export const forgotPasswordBody = z.object({ email: emailField }).strict()
+// The new password is checked BEFORE the token is touched, so a weak password doesn't burn the link.
+export const resetPasswordBody = z.object({ token: tokenField, newPassword: passwordField }).strict()
 
 // Password accounts send `password`; Google-only accounts send `confirmUsername`.
 export const deleteAccountBody = z
@@ -144,6 +159,7 @@ export type RegisterBody = z.infer<typeof registerBody>
 export type LoginBody = z.infer<typeof loginBody>
 export type UpdateProfileBody = z.infer<typeof updateProfileBody>
 export type ChangePasswordBody = z.infer<typeof changePasswordBody>
+export type ResetPasswordBody = z.infer<typeof resetPasswordBody>
 export type CreateTodoBody = z.infer<typeof createTodoBody>
 export type UpdateTodoBody = z.infer<typeof updateTodoBody>
 export type ListTodosQuery = z.infer<typeof listTodosQuery>

@@ -37,7 +37,10 @@ in one place — `src/constants/site.ts` — change it there, never hard-code it
 |---|---|---|
 | `/` | public | Landing page: headline, hero illustration, clickable feature cards (signed out → sign-up modal; signed in → straight to the feature), CTAs |
 | `/login` | guests | Bordered card: Continue with Google, or email **or** username + password; shows `?error=` messages from Google sign-in |
-| `/register` | guests | Bordered card: Sign up with Google, or full name, username (live availability), email, password + **confirm password** |
+| `/register` | guests | Bordered card: Sign up with Google, or full name, username (live availability), email, password (live rule checklist) + **confirm password**. Success shows "Check your email" (Resend, use a different email); nobody is signed in yet |
+| `/forgot-password` | guests | Email → "If an account uses that email, we've sent a link" (same screen whether or not the account exists) |
+| `/reset-password?token=` | anyone with the link | Choose a new password (rule checklist); expired/used/wrong link → "This link didn't work" + "Send me a new link" |
+| `/verify-email?token=` | anyone with the link | One button, "Verify my email" (a click, not on load — mail scanners fetch links); then "Log in" |
 | `/dashboard` | signed in | Big weekday headline, greeting, progress, stats, quick add, Overdue, Due today, Up next, by category |
 | `/tasks` | signed in | All tasks as a **card grid**: quick add, status tabs, category tabs, search, Filters panel, active-filter chips, clear completed |
 | `/tasks/new` | signed in | Full task form |
@@ -57,8 +60,12 @@ in one place — `src/constants/site.ts` — change it there, never hard-code it
 - **Signed out:** logo, Features (landing anchor), theme toggle, Log in, Get started.
 - **Signed in:** logo, Dashboard, All tasks, Trash, theme toggle, **New task** (primary
   button), avatar menu (name, @username, Profile, Log out).
-- **Mobile:** a menu button opens a panel with the same links; the active route
-  is highlighted; navigating closes the menu.
+- **Mobile:** a menu button opens a panel under the header over a dimmed page.
+  Signed in: account card (photo, name, @username → profile), Dashboard, All tasks,
+  Trash, **New task**, and **Log out** right in the panel (no second dropdown).
+  Signed out: Features, Log in, Get started. The active route is highlighted.
+  It closes on an outside press (the dimmed page), Escape, the X, or choosing a
+  link (`useDismiss`); page scroll is locked while it's open.
 
 ### 1.3 Tasks
 
@@ -123,16 +130,26 @@ category and priority.
 - Google-only accounts: password login fails with the normal generic error;
   the profile offers **Set a password** (no current password needed); deleting
   the account is confirmed by typing the username instead of a password.
+- Google accounts are **verified from the start** (`emailVerified: true`).
+- Linking to an existing password account whose email was **never verified** also
+  verifies it, but throws away that account's password and ends its sessions and
+  links: whoever registered the address by password never proved they own it, so the
+  real owner (who just signed in with Google) must not inherit their password.
 - Profile shows a "Google connected" badge when linked.
 
 ### 1.5 Profile & account
 
 - Shows the profile photo (or initials on a colour derived from the username), full name,
   @username, joined month, bio, and a stats strip.
-- **Edit:** full name, username, email, bio (≤ 160).
+- **Edit:** full name, username, email, bio (≤ 160). A **new email is not applied
+  straight away**: it waits in `pendingEmail` and a link goes to the NEW address; `email`
+  changes only when that link is used. Until then the email field keeps the current
+  address and shows "Waiting for you to confirm …" with **Resend**. Typing the current
+  address back cancels the change. (Otherwise anyone could put someone else's email on
+  their account and later take it over by signing in with Google.)
 - **Username change:** live "Available / taken / invalid" as you type; the
   server validates again on save.
-- **Change password:** needs the current password. Signs out every *other*
+- **Change password:** new passwords need a special character (below). Needs the current password. Signs out every *other*
   device (session version bump); this device stays signed in.
 - **Profile photo:** the camera button on the avatar picks a JPG, PNG or WebP up
   to 2 MB. The browser centre-crops it to a square (max 512×512, WebP or JPEG)
@@ -143,6 +160,26 @@ category and priority.
   deleted with the account. Shown on the profile and in the navbar menu.
 - **Log out.**
 - **Delete account:** needs the password; deletes the user and all their tasks.
+
+### 1.5b Passwords, email verification, reset
+
+- **New passwords** (sign-up, change, reset): 8–72 characters **including a special
+  character** = anything that isn't a letter, digit or whitespace (`PASSWORD_SPECIAL` in
+  `constants/todo-values.ts`, used by `passwordField` and by the live checklist
+  `PasswordRules`, so the UI can't disagree with the API). **Login does not apply the
+  rule**, so accounts made before it existed still sign in.
+- **Sign-up creates the account but does not sign anyone in.** A verification link
+  (24 hours, single-use) goes to the address; the person opens it, presses "Verify my
+  email", then logs in. Logging in before that fails with 403 `email_not_verified`
+  (only after the password checked out, so it never reveals which emails have accounts)
+  and the login page offers "Resend the verification email".
+- **Accounts from before verification existed are grandfathered**: no `emailVerified`
+  field means verified (`emailVerified !== false` everywhere).
+- **Forgot password:** email → a 30-minute, single-use reset link → new password.
+  The answer is identical whether or not the account exists. A reset signs out every
+  device, doesn't sign this one in, and counts as proof of the address (an unverified
+  account that resets can log in). It also cancels an unfinished email change.
+- Details, security rules and env vars: Section 4.5c.
 
 ### 1.6 Username rules (client and server share one schema)
 
@@ -204,7 +241,8 @@ src/
     globals.css                 # design tokens + signature CSS (ink strike, checkmark, toasts)
     not-found.tsx, error.tsx
     (marketing)/                # public pages: layout (navbar+footer), page.tsx = landing
-    (auth)/                     # layout wraps <GuestOnly>; login/, register/
+    (auth)/                     # layout wraps <GuestOnly>; login/, register/, forgot-password/
+    (account)/                  # pages opened from an emailed link (no GuestOnly): reset-password/, verify-email/
     (app)/                      # layout wraps <RequireAuth>; dashboard/, tasks/, tasks/new/, tasks/[id]/edit/, profile/
     robots.ts, sitemap.ts, opengraph-image.tsx   # SEO files (Section 6b)
     api/health/route.ts
@@ -214,20 +252,20 @@ src/
     config/env.ts, db.ts        # env validation (lazy), cached Mongoose connection
     models/                     # *.model.ts — Mongoose schemas
     controllers/                # *.controller.ts — the actual request logic
-    services/                   # *.service.ts — username bloom filter
+    services/                   # *.service.ts — username bloom filter, email.service (Resend), email-templates, account-email
     lib/                        # http.ts (envelope, route wrapper, parsing), session.ts, auth.ts, rate-limit.ts, helpers.ts
     test/                       # fake-model.ts, client.ts (TestClient), api.test.ts, empty.ts
   views/                        # one client component per page: *-view.tsx
   components/
     ui/                         # primitives: button, input, select, field (+Textarea), avatar, password-input
-    layout/                     # navbar, nav-link, user-menu, footer, page-wrapper
+    layout/                     # navbar, mobile-menu, nav-link, user-menu, footer, page-wrapper
     profile/                    # avatar-upload (camera button, crop, upload)
     todos/                      # todo-card + todo-grid (All tasks), todo-item + todo-list (dashboard), todo-toolbar, todo-form, quick-add, tags-input, subtasks-editor, todo-empty-state
     marketing/                  # hero-illustration (SVG)
-    auth/                       # username-status
+    auth/                       # username-status, password-rules, check-email, auth-shell (the centred card), google-button
     guards/                     # require-auth (also provides useCurrentUser), guest-only
     skeletons/, shared/
-  hooks/                        # auth/, profile/, todos/, shared/ — TanStack Query hooks
+  hooks/                        # auth/, profile/, todos/, shared/ (use-dismiss: outside press + Escape) — TanStack Query hooks
   api/                          # client fetchers: client.ts (axios + ApiError), auth.ts, users.ts, todos.ts
   lib/
     validation.ts               # ★ THE shared zod schemas (API bodies + field rules)
@@ -276,13 +314,19 @@ export const POST = route(createTodo)
 { "success": false, "message": "Validation failed", "details": [{ "path": "title", "message": "Give the task a name" }] }
 ```
 Forms map `details` onto fields with `applyServerErrors` (`src/lib/form-errors.ts`).
+Errors may also carry a machine-readable `"code"` (`email_not_verified`, `invalid_token`,
+`email_taken`); the client reads it with `errorCode()` and `ApiError.code`.
 
 ### 4.4 API reference (base `/api/v1`)
 
 | Method & path | Auth | Body / query | Returns |
 |---|---|---|---|
-| `POST /auth/register` | – | `{ fullName, username, email, password }` | user (201) + session cookie |
-| `POST /auth/login` | – | `{ identifier, password }` (email or username) | user + session cookie |
+| `POST /auth/register` | – | `{ fullName, username, email, password }` | 201 `{ email, verificationSent }`; **no session cookie**; emails a verification link |
+| `POST /auth/verify-email` | – | `{ token }` | `{ email }`; 400 `invalid_token` if used/expired/wrong |
+| `POST /auth/resend-verification` | – | `{ identifier }` (email or username) | same message always; sends only if the account needs verifying (or has a pending email) |
+| `POST /auth/forgot-password` | – | `{ email }` | same message always; emails a reset link only if the account exists |
+| `POST /auth/reset-password` | – | `{ token, newPassword }` | success message; 400 `invalid_token`; no session cookie |
+| `POST /auth/login` | – | `{ identifier, password }` (email or username) | user + session cookie; 403 `email_not_verified` |
 | `POST /auth/logout` | – | – | clears cookie |
 | `GET /auth/google` | – | `?next=` | 302 to Google (sets the short-lived `taskora_oauth` cookie) |
 | `GET /auth/google/callback` | – | `?code&state` from Google | 302 into the app with a session, or to `/login?error=…` |
@@ -291,7 +335,7 @@ Forms map `details` onto fields with `applyServerErrors` (`src/lib/form-errors.t
 | `GET /users/me/avatar` | ✓ | – | the image bytes (404 if none) |
 | `PUT /users/me/avatar` | ✓ | raw image bytes (jpg/png/webp, ≤ 2 MB) | user (with `avatarUrl`) |
 | `DELETE /users/me/avatar` | ✓ | – | user (`avatarUrl: null`) |
-| `PATCH /users/me` | ✓ | any of `{ fullName, username, email, bio }` | user |
+| `PATCH /users/me` | ✓ | any of `{ fullName, username, email, bio }` | user (a new `email` becomes `pendingEmail` and a link is sent there) |
 | `PATCH /users/me/password` | ✓ | `{ currentPassword?, newPassword }` (current required only if the account has a password) | fresh cookie; message "Password changed" or "Password set" |
 | `DELETE /users/me` | ✓ | `{ password }`, or `{ confirmUsername }` for Google-only accounts | clears cookie |
 | `GET /todos` | ✓ | `?status&priority&category&tag&due&search&sort&today` | `{ todos, stats }` |
@@ -306,7 +350,7 @@ Forms map `details` onto fields with `applyServerErrors` (`src/lib/form-errors.t
 | `DELETE /todos/trash` | ✓ | – | `{ deletedCount }` — empties the trash (permanent) |
 | `POST /todos/[id]/restore` | ✓ | – | task (404 unless it's in the trash) |
 | `DELETE /todos/[id]/permanent` | ✓ | – | `{ _id }` (404 unless it's in the trash) |
-| `GET /api/health` | – | – | `{ status, database }` |
+| `GET /api/health` | – | – | `{ status, database, email: 'configured' \| 'not configured' }` |
 
 `today` is the viewer's own `YYYY-MM-DD` (the client always sends it). Due
 filters and stats are calendar-day based and the server can't know the user's timezone.
@@ -353,6 +397,41 @@ filters and stats are calendar-day based and the server can't know the user's ti
 - Redirect URI: `${APP_URL || request origin}/api/v1/auth/google/callback`. It must
   be listed **exactly** in Google Cloud Console (see Section 10).
 
+### 4.5c Email verification and password reset
+
+Files: `controllers/email-auth.controller.ts` (verify, resend, forgot, reset),
+`services/account-email.service.ts` (make a token, store its hash, send),
+`services/email.service.ts` (Resend over `fetch`, no SDK), `services/email-templates.ts`,
+`lib/tokens.ts`. Register/login/profile/Google changes are in their own controllers.
+
+- **Tokens:** 256 random bits (`base64url`) in the email; only the **SHA-256 hash** and an
+  expiry are stored on the user (`verifyTokenHash/Expires`, `resetTokenHash/Expires`,
+  all `select: false`). One outstanding token per purpose: a new link replaces the old.
+  Verify links last 24 h, reset links 30 min. Used tokens are cleared, and the update is
+  conditional on the hash (`updateOne({ _id, resetTokenHash: hash }, …)` + `modifiedCount`),
+  so a link can't be used twice even by two simultaneous requests.
+- **POST, not GET,** for verify: mail scanners and link previews fetch URLs; a GET would burn
+  the token. The page waits for a click.
+- **Validate before consuming:** the reset password is checked by zod *before* the token is
+  looked up, so a weak password doesn't use up the link.
+- **Generic answers:** forgot / resend answer identically whether or not the account exists
+  (send failures are logged, never returned). Rate limits: per IP and per address (Section 4.8).
+- **Links are built from `siteUrl()` (`APP_URL`), never from the request's Host header**, which
+  an attacker controls (a poisoned Host would send the victim a link to the attacker's site).
+- **Reset** bumps `sessionVersion` (all devices signed out), sets `emailVerified`, and clears any
+  pending email change and its link. **Changing your password** clears an unused reset link.
+- **`pendingEmail`:** see Section 1.5. The verify endpoint applies it (and re-checks the address
+  isn't taken by then: 409 `email_taken`).
+- **Email transport:** `RESEND_API_KEY` + `EMAIL_FROM` (default `Taskora <onboarding@resend.dev>`).
+  Development without a key prints the email (link included) to the terminal. **Production without
+  a key answers 503 before creating anything** (`assertEmailReady`) rather than pretend to send.
+  `/api/health` shows `email: configured`.
+- **Resend sandbox:** `onboarding@resend.dev` only delivers to the Resend account owner. For real
+  users, verify a domain in Resend and set `EMAIL_FROM` to an address on it. Until then new users
+  can't receive their link, and because login requires verification **they can't log in**.
+  A provider failure at sign-up doesn't lose the account: the response says
+  `verificationSent: false` and the page offers Resend (the reason is in the server log).
+
 ### 4.6 Username bloom filter (`server/services/username-bloom.service.ts`)
 
 - Sized for 100k usernames at 1% false positives; two FNV-1a hashes combined
@@ -372,7 +451,7 @@ filters and stats are calendar-day based and the server can't know the user's ti
   hot reload and warm serverless invocations). `bufferCommands: false`.
 - Models use `mongoose.models.X || mongoose.model(...)` to survive hot reload.
 - Every task query filters by `userId` — see **Section 4.9 Multi-tenancy** for the full rules.
-- `userId`, `password`, `sessionVersion` and `__v` are never sent to the client.
+- `userId`, `password`, `sessionVersion`, the email token fields and `__v` are never sent to the client.
 - Index: `{ userId: 1, completed: 1, createdAt: -1 }` and `{ userId: 1, deletedAt: -1 }` (trash); unique indexes on `username` and `email`.
 - **Soft delete:** every live-task query adds `LIVE = { deletedAt: null }`
   (in `todo.controller.ts`); trash queries use `{ deletedAt: { $ne: null } }`.
@@ -388,6 +467,8 @@ filters and stats are calendar-day based and the server can't know the user's ti
 | login / register / change password / delete account | 10 per 15 min per IP |
 | create task | 30 per minute per user |
 | upload / remove profile photo | 20 per 15 min per user |
+| send verification / reset email | 5 per 15 min per IP **and** 3 per 15 min per address |
+| try a verify / reset link | 30 per 15 min per IP |
 | username availability check | 120 per minute per IP |
 
 In-memory per server instance → best-effort on Vercel. `DISABLE_RATE_LIMIT=1`
@@ -506,6 +587,11 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
 - **Cards:** `rounded-lg border bg-surface`, pinned cards get a `border-primary/40`
   outline, soft primary shadow on hover. Pills (category tabs) are `rounded-full`;
   the selected pill is filled `bg-primary`.
+- **Anything that pops open must close on an outside press and Escape, not only on its
+  own Cancel/X:** use `useDismiss(ref, active, onClose, ignoreRef?)` (`hooks/shared/use-dismiss.ts`)
+  for menus, the mobile panel and inline confirmations (task-card delete, trash delete-forever,
+  empty trash, delete account). Pass the opening button as `ignoreRef` so its own click doesn't
+  fight the dismissal. `<Modal>` already closes on a backdrop click.
 - **Toasts:** `ToastContainer` sits **top-right, just below the navbar** (`providers.tsx`
   + the `.Toastify__toast-container--top-right` rule in `globals.css`), so they never
   cover New task or the avatar menu; full width at the top on phones. Every user-visible
@@ -546,7 +632,8 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
   descriptions and canonicals (`?next=` / `?error=` variants all point at one page).
 - **Private pages are never indexed:** the `(app)` layout exports
   `robots: { index: false, follow: false }`; `/api/*` sends `X-Robots-Tag: noindex, nofollow`
-  (`next.config.ts`); `robots.txt` disallows `/api/`, `/dashboard`, `/tasks`, `/trash`, `/profile`;
+  (`next.config.ts`); `robots.txt` disallows `/api/`, `/dashboard`, `/tasks`, `/trash`, `/profile`, `/forgot-password`, `/reset-password`, `/verify-email`
+  (the last two also send `referrer: no-referrer`, since their URL holds a secret token);
   the 404 page is noindex automatically.
 - **Sitemap** lists only public pages (`/`, `/register`, `/login`). A new public page
   must be added to `app/sitemap.ts`; a new signed-in page goes under `(app)` (noindex
@@ -568,6 +655,8 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
 - [ ] Uploaded files are checked on the server by their bytes, never by the Content-Type header or file name.
 - [ ] Auth-sensitive endpoints are rate limited.
 - [ ] Redirect targets pass `safeNextPath`.
+- [ ] Emailed links use `siteUrl()`, never the Host header; tokens are stored hashed, single-use, expiring; endpoints that email answer the same for known and unknown accounts.
+- [ ] New popovers / inline confirmations use `useDismiss`.
 - [ ] New signed-in pages are under `(app)` (noindex) and disallowed in `robots.ts`; new public pages are in `sitemap.ts`.
 - [ ] Security headers set in `next.config.ts` (nosniff, frame DENY, referrer, permissions).
 
@@ -575,7 +664,7 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
 
 ## 8. Testing
 
-- `npm test` runs `src/server/test/api.test.ts` (38 tests): bloom filter
+- `npm test` runs `src/server/test/api.test.ts` (62 tests): bloom filter
   correctness, auth, sessions, forged cookies, rate limiting, profile,
   username changes, password change signing out other devices, account
   deletion, Google sign-in (create, username clash, link by email, find by id,
@@ -583,7 +672,16 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
   Google-only password and deletion rules), profile photo (upload, replace,
   remove, type sniffing, size, owner-only), trash (soft delete hides the task
   everywhere, restore, delete forever only from the trash, empty, per-user
-  privacy), task privacy, filters, sorting, stats, and validation.
+  privacy), email verification (login blocked until verified, single-use / expiring /
+  wrong tokens, resend replaces the old link, legacy accounts, provider outage, no provider in
+  dev vs prod, APP_URL not Host, HTML escaping, Google verifying and discarding a stranger's
+  password), forgot / reset (generic answers, all devices signed out, weak password doesn't burn
+  the link, wrong-kind tokens, per-address limit), pending email changes, the special-character
+  rule, task privacy, filters, sorting, stats, and validation.
+- **Test helpers:** every `TestClient` gets its own IP (per-IP rate limits don't couple people);
+  `signedIn()` registers, marks the address verified, then logs in; `beforeEach` stubs Resend's
+  HTTP API into `outbox` (`lastEmail`, `tokenOf`, `sentTo`). New code that sends mail is tested
+  through that outbox.
 - The tests import the **real route handlers** from `src/app/api/**/route.ts`
   and call them with `NextRequest`s through `TestClient`, which keeps cookies
   like a browser (one `TestClient` = one person, all cookies in a jar;
@@ -596,7 +694,8 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
 - End-to-end checks are done by building a copy of the app with the fake
   models, running `next start`, and driving it with Playwright. When doing
   this, copy `node_modules` (Turbopack rejects a symlinked `node_modules`), and
-  set `DISABLE_RATE_LIMIT=1`.
+  set `DISABLE_RATE_LIMIT=1`. To follow email links in the browser, patch the copy's
+  `email.service.ts` to append each message to a file and read the link from it.
 
 ---
 
@@ -647,11 +746,21 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
 - `axiosClient` defaults to `Content-Type: application/json`, which makes axios
   JSON-encode a `FormData`. File uploads go through `api.upload`, which sends the
   Blob as the raw body with its own type.
+- **Per-call `mutate(…, { onSuccess/onSettled })` callbacks are dropped if the component
+  that called `mutate` unmounts first.** The mobile menu once closed itself before logout
+  finished, so the "Logged out" toast and redirect never ran. Close/navigate *inside* the callback.
+- A parent with `backdrop-filter` (the sticky header's `backdrop-blur`) becomes the containing
+  block for `position: fixed` children, so the mobile menu is a **sibling** of `<header>`, not a child.
+- `useDismiss` listens for `pointerdown`, not `click`: the click that opens something would
+  otherwise be seen as "outside" once it mounts; and give the opener as `ignoreRef`.
+- Pages that read `?token=` need `<Suspense>` like any `useSearchParams` page, and are
+  `robots: noindex` + `referrer: no-referrer`.
 - In JSX text use typographic apostrophes (’) — straight `'` fails `react/no-unescaped-entities`.
 
 **Server**
 - Bloom filter hashes must stay unsigned (`>>> 0`) — see Section 4.6.
 - `bcrypt` ignores bytes past 72 → password max is 72.
+- Registering no longer returns a session or a user: `useRegister` must not touch the auth cache.
 - Mongoose `.lean()` does **not** apply schema defaults, so a field added later
   (like `hasPassword`) is simply missing on old documents. Derive from the
   source of truth where you can, and query `null` (which matches missing).
@@ -681,9 +790,13 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
    - `SESSION_SECRET` — 32+ random characters (`openssl rand -base64 32`)
    - Optional, for Google sign-in: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
      and `APP_URL` (e.g. `https://taskora.vercel.app`, no trailing slash).
+   - For sign-up emails and password reset: `RESEND_API_KEY` and `EMAIL_FROM`
+     (e.g. `Taskora <no-reply@yourdomain.com>`). **Verify that domain in Resend first**
+     (Resend → Domains → add the DNS records); the default sender only reaches the
+     Resend account owner. Without `RESEND_API_KEY`, sign-up answers 503.
    **Set `APP_URL` even without Google**: canonical links, the sitemap and share
    previews use it (Section 6b)
-5. Deploy, then open `/api/health` → `"database": "connected"`.
+5. Deploy, then open `/api/health` → `"database": "connected"` and `"email": "configured"`.
 
 **Setting up Google sign-in (Google Cloud Console):**
 1. APIs & Services → OAuth consent screen: External; app name Taskora; your email.
@@ -776,11 +889,15 @@ Update the status here when a milestone is finished.
 - Keyboard shortcuts: `n` new task, `/` focus search, `x` toggle the focused task; a `?` help popover.
 - **Done when:** undo restores exactly what was deleted (tests), shortcuts never fire while typing in an input.
 
-### ⬜ Milestone 9: Password reset and email verification
+### ✅ Milestone 9: Password reset and email verification
 - "Forgot password" email with a single-use, 30-minute token (hashed in the DB); reset page.
-- Email verification on sign-up (unverified users can use the app, with a banner).
-- Email via Resend; `RESEND_API_KEY` added to env docs.
-- **Done when:** tests cover token expiry, reuse and a wrong token; login still gives one generic error.
+- Email verification on sign-up — **required before login** (stricter than the original
+  "unverified users can use the app with a banner", at the user's request); accounts from before
+  it are grandfathered. Changing your email goes through a pending address.
+- Email via Resend; `RESEND_API_KEY` / `EMAIL_FROM` in the env docs.
+- Also done alongside: special character required in new passwords; redesigned mobile menu;
+  outside-press dismissal everywhere (`useDismiss`).
+- **Done when:** tests cover token expiry, reuse and a wrong token; login still gives one generic error. ✔
 
 ### ✅ Milestone 10: Profile photos (built before 8 and 9, at the user's request)
 - Upload (≤ 2 MB, jpg/png/webp), crop to square in the browser, initials as the fallback.

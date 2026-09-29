@@ -16,8 +16,8 @@ export function ok<T>(message: string, body?: T, status = 200): NextResponse {
   return NextResponse.json(body === undefined ? { success: true, message } : { success: true, message, body }, { status })
 }
 
-export function fail(status: number, message: string, details?: FieldIssue[]): NextResponse {
-  return NextResponse.json({ success: false, message, ...(details?.length ? { details } : {}) }, { status })
+export function fail(status: number, message: string, details?: FieldIssue[], code?: string): NextResponse {
+  return NextResponse.json({ success: false, message, ...(details?.length ? { details } : {}), ...(code ? { code } : {}) }, { status })
 }
 
 /** Throw from anywhere in a handler; the route wrapper turns it into a response. */
@@ -26,7 +26,9 @@ export class HttpError extends Error {
     public status: number,
     message: string,
     public details?: FieldIssue[],
-    public clearSession = false
+    public clearSession = false,
+    /** Machine-readable reason the UI can act on, e.g. 'email_not_verified'. */
+    public code?: string
   ) {
     super(message)
   }
@@ -79,7 +81,7 @@ export function route<P = Record<string, never>>(handler: Handler<P>): Handler<P
 
 function toErrorResponse(error: unknown): NextResponse {
   if (error instanceof HttpError) {
-    const res = fail(error.status, error.message, error.details)
+    const res = fail(error.status, error.message, error.details, error.code)
     if (error.clearSession) clearSessionCookie(res)
     return res
   }

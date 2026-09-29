@@ -23,10 +23,13 @@ export interface FieldIssue {
 export class ApiError extends Error {
   status?: number
   details?: FieldIssue[]
-  constructor(message: string, status?: number, details?: FieldIssue[], cause?: unknown) {
+  /** Machine-readable reason from the server, e.g. 'email_not_verified' or 'invalid_token'. */
+  code?: string
+  constructor(message: string, status?: number, details?: FieldIssue[], cause?: unknown, code?: string) {
     super(message, { cause })
     this.status = status
     this.details = details
+    this.code = code
   }
 }
 
@@ -36,8 +39,8 @@ async function request<T>(method: string, path: string, body?: unknown, headers?
     return response.data
   } catch (error) {
     if (axios.isAxiosError(error) && error.response) {
-      const { message, details } = (error.response.data ?? {}) as { message?: string; details?: FieldIssue[] }
-      throw new ApiError(message || 'Request failed', error.response.status, details, error)
+      const { message, details, code } = (error.response.data ?? {}) as { message?: string; details?: FieldIssue[]; code?: string }
+      throw new ApiError(message || 'Request failed', error.response.status, details, error, code)
     }
     throw new ApiError("Can't reach the server. Check your connection and try again.", undefined, undefined, error)
   }

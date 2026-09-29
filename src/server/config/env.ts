@@ -1,4 +1,5 @@
 import 'server-only'
+import { SITE } from '@/constants/site'
 
 /**
  * Reads and validates server env vars once. Throws at first use (not at
@@ -21,6 +22,18 @@ export function googleEnv() {
   const clientId = process.env.GOOGLE_CLIENT_ID
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET
   return clientId && clientSecret ? { clientId, clientSecret, appUrl: process.env.APP_URL?.replace(/\/+$/, '') } : null
+}
+
+/**
+ * Email (Resend) is optional in development, where messages are printed to the
+ * terminal instead. In production sign-up and password reset need it: without
+ * RESEND_API_KEY those endpoints answer 503 rather than pretend to send.
+ * EMAIL_FROM must be an address on a domain verified in Resend (the default
+ * onboarding@resend.dev only delivers to the Resend account owner).
+ */
+export function emailEnv() {
+  const apiKey = process.env.RESEND_API_KEY
+  return apiKey ? { apiKey, from: process.env.EMAIL_FROM || `${SITE.name} <onboarding@resend.dev>` } : null
 }
 
 export function env() {

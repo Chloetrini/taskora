@@ -35,6 +35,11 @@ export const LIMITS = {
   auth: { limit: 10, windowMs: 15 * 60 * 1000 }, // login / register / password / delete
   createTask: { limit: 30, windowMs: 60 * 1000 },
   usernameCheck: { limit: 120, windowMs: 60 * 1000 },
+  // Emails we send (verification, password reset): per IP, and per address so one inbox can't be flooded.
+  email: { limit: 5, windowMs: 15 * 60 * 1000 },
+  emailTo: { limit: 3, windowMs: 15 * 60 * 1000 },
+  // Trying a link token (verify / reset). Tokens are 256-bit, so this only stops noise.
+  token: { limit: 30, windowMs: 15 * 60 * 1000 },
   avatar: { limit: 20, windowMs: 15 * 60 * 1000 }, // upload / remove profile photo, per user
 } as const
 

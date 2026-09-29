@@ -22,15 +22,35 @@ export async function requireUser(req: NextRequest) {
 
 /**
  * The public shape of a user — never password, sessionVersion, googleId,
- * avatar bytes or __v. Adds `googleLinked` so the profile can show "Google
+ * avatar bytes, email tokens or __v. Adds `googleLinked` so the profile can show "Google
  * connected", and `avatarUrl` (versioned, so a new photo busts the cache).
  * Callers must select '+googleId' for googleLinked to be accurate, and
  * '+password' when they can: `hasPassword` then comes from the password
  * itself, which also covers accounts created before the flag existed.
  */
 export function toPublicUser(user: object) {
-  const { password, sessionVersion: _v, __v: _x, googleId, avatar: _a, avatarUpdatedAt, ...safe } = user as Record<string, unknown>
+  const {
+    password,
+    sessionVersion: _v,
+    __v: _x,
+    googleId,
+    avatar: _a,
+    avatarUpdatedAt,
+    verifyTokenHash: _vh,
+    verifyTokenExpires: _ve,
+    resetTokenHash: _rh,
+    resetTokenExpires: _re,
+    ...safe
+  } = user as Record<string, unknown>
   const hasPassword = password === undefined ? Boolean(safe.hasPassword) : Boolean(password)
   const avatarUrl = avatarUpdatedAt ? `/api/v1/users/me/avatar?v=${new Date(avatarUpdatedAt as Date).getTime()}` : null
-  return { ...safe, hasPassword, googleLinked: Boolean(googleId), avatarUrl }
+  return {
+    ...safe,
+    hasPassword,
+    googleLinked: Boolean(googleId),
+    avatarUrl,
+    // Old accounts have no field: they were never asked to verify, so they count as verified.
+    emailVerified: safe.emailVerified !== false,
+    pendingEmail: (safe.pendingEmail as string | null | undefined) ?? null,
+  }
 }

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import Link from 'next/link'
 import { CalendarDays, ListChecks, Pencil, Pin, Trash2 } from 'lucide-react'
 import { toast } from 'react-toastify'
@@ -9,6 +9,7 @@ import { DUE_TONE, TodoCheckbox } from '@/components/todos/todo-item'
 import { CATEGORY_META, PRIORITY_META } from '@/constants/todo'
 import { cn, describeDueDate } from '@/lib/utils'
 import { useDeleteTodo, useToggleSubtask, useUpdateTodo } from '@/hooks/todos/use-todo-actions'
+import { useDismiss } from '@/hooks/shared/use-dismiss'
 import type { Todo } from '@/types/todo'
 
 /**
@@ -17,6 +18,9 @@ import type { Todo } from '@/types/todo'
  */
 export default function TodoCard({ todo, onTagClick }: { todo: Todo; onTagClick?: (tag: string) => void }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const confirmRef = useRef<HTMLDivElement>(null)
+  // Pressing anywhere outside the confirmation (or Escape) backs out, same as Cancel.
+  useDismiss(confirmRef, confirmDelete, () => setConfirmDelete(false))
   const [showAllSubtasks, setShowAllSubtasks] = useState(false)
   const updateTodo = useUpdateTodo()
   const deleteTodo = useDeleteTodo()
@@ -128,7 +132,7 @@ export default function TodoCard({ todo, onTagClick }: { todo: Todo; onTagClick?
       {/* Actions — pushed to the bottom so cards in a row line up */}
       <div className="mt-auto pt-4">
         {confirmDelete ? (
-          <div role="group" aria-label={`Confirm deleting "${todo.title}"`} className="flex items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2">
+          <div ref={confirmRef} role="group" aria-label={`Confirm deleting "${todo.title}"`} className="flex items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2">
             <p className="text-sm font-medium">Move to trash?</p>
             <div className="flex gap-1.5">
               <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(false)}>

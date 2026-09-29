@@ -1,3 +1,5 @@
+import bcrypt from 'bcryptjs'
+import { NextRequest } from 'next/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/server/config/db', () => ({ connectDB: async () => undefined }))
@@ -26,22 +28,40 @@ const trash = await import('@/app/api/v1/todos/trash/route')
 const restore = (await import('@/app/api/v1/todos/[id]/restore/route')).POST
 const forever = (await import('@/app/api/v1/todos/[id]/permanent/route')).DELETE
 const avatar = await import('@/app/api/v1/users/me/avatar/route')
+const verifyEmail = (await import('@/app/api/v1/auth/verify-email/route')).POST
+const resendVerification = (await import('@/app/api/v1/auth/resend-verification/route')).POST
+const forgotPassword = (await import('@/app/api/v1/auth/forgot-password/route')).POST
+const resetPassword = (await import('@/app/api/v1/auth/reset-password/route')).POST
 const googleStart = (await import('@/app/api/v1/auth/google/route')).GET
 const googleCallback = (await import('@/app/api/v1/auth/google/callback/route')).GET
 
+// Every email the app "sends" lands here (Resend's HTTP API is stubbed in beforeEach).
+type Sent = { from: string; to: string[]; subject: string; html: string; text: string }
+const outbox: Sent[] = []
+const lastEmail = (to?: string) => [...outbox].reverse().find(m => !to || m.to.includes(to))
+const tokenOf = (mail: Sent) => new URL(/https?:\/\/\S+/.exec(mail.text)![0]).searchParams.get('token')!
+const sentTo = (to: string) => outbox.filter(m => m.to.includes(to)).length
+
+/** A person who has registered, confirmed their address, and logged in. */
 let n = 0
 async function signedIn(overrides: Record<string, string> = {}) {
   n++
   const c = new TestClient()
-  const res = await c.call(register, 'POST', '/api/v1/auth/register', {
+  const creds = {
     fullName: 'Chloe Test',
     username: `chloe${n}`,
     email: `chloe${n}@example.com`,
-    password: 'supersecret1',
+    password: 'supersecret1!',
     ...overrides,
-  })
+  }
+  const res = await c.call(register, 'POST', '/api/v1/auth/register', creds)
   expect(res.status).toBe(201)
-  return { c, user: res.json.body }
+  expect(res.cookieSet).toBeUndefined() // registering never signs anyone in
+  // Confirm the address the way the emailed link would.
+  FakeUser.all().find(u => u.email === creds.email.toLowerCase())!.emailVerified = true
+  const session = await c.call(login, 'POST', '/api/v1/auth/login', { identifier: creds.username, password: creds.password })
+  expect(session.status).toBe(200)
+  return { c, user: session.json.body }
 }
 
 const check = (c: InstanceType<typeof TestClient>, name: string) =>
@@ -52,10 +72,26 @@ const titles = (c: InstanceType<typeof TestClient>, qs: string) =>
   c.call(todos.GET, 'GET', `/api/v1/todos?${qs}`).then(r => r.json.body.todos.map((t: { title: string }) => t.title))
 
 beforeEach(() => {
+  outbox.length = 0
+  vi.stubEnv('RESEND_API_KEY', 'test-key')
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: { body?: string }) => {
+      if (!String(url).includes('api.resend.com')) throw new Error(`unexpected fetch: ${url}`)
+      outbox.push(JSON.parse(String(init?.body)))
+      return new Response('{"id":"email_1"}', { status: 200 })
+    })
+  )
   FakeUser.reset()
   FakeTodo.reset()
   resetUsernameFilter()
   resetRateLimits()
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
+  vi.restoreAllMocks()
 })
 
 describe('bloom filter', () => {
@@ -76,42 +112,79 @@ describe('bloom filter', () => {
 })
 
 describe('auth', () => {
-  it('registers with an httpOnly encrypted session and never returns secrets', async () => {
+  it('registers WITHOUT signing in, stores only a hashed password, and emails a verification link', async () => {
     const c = new TestClient()
-    const res = await c.call(register, 'POST', '/api/v1/auth/register', { fullName: 'Chloe E', username: 'Chloe_Dev', email: 'c@x.com', password: 'supersecret1' })
+    const res = await c.call(register, 'POST', '/api/v1/auth/register', { fullName: 'Chloe E', username: 'Chloe_Dev', email: 'C@x.com', password: 'supersecret1!' })
     expect(res.status).toBe(201)
-    expect(res.json.body.username).toBe('chloe_dev')
-    expect(res.json.body.password).toBeUndefined()
-    expect(res.json.body.sessionVersion).toBeUndefined()
-    expect(res.cookieSet?.httpOnly).toBe(true)
-    expect(res.cookieSet?.value).not.toContain('chloe') // sealed, not readable
-    expect(FakeUser.all()[0].password).toMatch(/^\$2[aby]\$12\$/)
-    expect((await c.call(me, 'GET', '/api/v1/auth/me')).json.body.username).toBe('chloe_dev')
+    expect(res.json.body).toEqual({ email: 'c@x.com', verificationSent: true })
+    expect(res.cookieSet).toBeUndefined()
+    expect((await c.call(me, 'GET', '/api/v1/auth/me')).status).toBe(401)
+
+    const [user] = FakeUser.all()
+    expect(user.username).toBe('chloe_dev')
+    expect(user.password).toMatch(/^\$2[aby]\$12\$/)
+    expect(user.emailVerified).toBe(false)
+
+    const mail = lastEmail('c@x.com')!
+    expect(mail.subject).toBe('Verify your email for Taskora')
+    expect(mail.from).toContain('Taskora')
+    const token = tokenOf(mail)
+    expect(mail.text).toContain('http://localhost:3000/verify-email?token=')
+    expect(user.verifyTokenHash).toMatch(/^[a-f0-9]{64}$/) // a SHA-256, not the token
+    expect(JSON.stringify(user)).not.toContain(token)
+    expect(user.verifyTokenExpires.getTime() - Date.now()).toBeGreaterThan(23 * 3600_000)
   })
 
   it('rejects duplicate username/email with field details, and bad input', async () => {
     await signedIn({ username: 'taken', email: 'a@x.com' })
     const c = new TestClient()
-    const dupUser = await c.call(register, 'POST', '/api/v1/auth/register', { fullName: 'B B', username: 'TAKEN', email: 'b@x.com', password: 'supersecret1' })
+    const dupUser = await c.call(register, 'POST', '/api/v1/auth/register', { fullName: 'B B', username: 'TAKEN', email: 'b@x.com', password: 'supersecret1!' })
     expect(dupUser.status).toBe(409)
     expect(dupUser.json.details?.[0].path).toBe('username')
-    const dupEmail = await c.call(register, 'POST', '/api/v1/auth/register', { fullName: 'B B', username: 'fresh', email: 'A@x.com', password: 'supersecret1' })
+    const dupEmail = await c.call(register, 'POST', '/api/v1/auth/register', { fullName: 'B B', username: 'fresh', email: 'A@x.com', password: 'supersecret1!' })
     expect(dupEmail.json.details?.[0].path).toBe('email')
     const bad = await c.call(register, 'POST', '/api/v1/auth/register', { fullName: 'B B', username: '1bad!', email: 'nope', password: 'short' })
     expect(bad.json.details?.map(d => d.path)).toEqual(expect.arrayContaining(['username', 'email', 'password']))
-    const reserved = await c.call(register, 'POST', '/api/v1/auth/register', { fullName: 'B B', username: 'admin', email: 'z@x.com', password: 'supersecret1' })
+    const reserved = await c.call(register, 'POST', '/api/v1/auth/register', { fullName: 'B B', username: 'admin', email: 'z@x.com', password: 'supersecret1!' })
     expect(reserved.json.details?.[0].message).toBe('That username is reserved')
   })
 
   it('logs in with email or username; one generic error', async () => {
     await signedIn({ username: 'loginme', email: 'login@x.com' })
     const c = new TestClient()
-    expect((await c.call(login, 'POST', '/api/v1/auth/login', { identifier: 'LOGIN@x.com', password: 'supersecret1' })).status).toBe(200)
-    expect((await c.call(login, 'POST', '/api/v1/auth/login', { identifier: 'loginme', password: 'supersecret1' })).status).toBe(200)
+    expect((await c.call(login, 'POST', '/api/v1/auth/login', { identifier: 'LOGIN@x.com', password: 'supersecret1!' })).status).toBe(200)
+    expect((await c.call(login, 'POST', '/api/v1/auth/login', { identifier: 'loginme', password: 'supersecret1!' })).status).toBe(200)
     const wrong = await c.call(login, 'POST', '/api/v1/auth/login', { identifier: 'loginme', password: 'nope-nope' })
     const ghost = await c.call(login, 'POST', '/api/v1/auth/login', { identifier: 'ghost', password: 'nope-nope' })
     expect(wrong.status).toBe(401)
     expect(ghost.json.message).toBe(wrong.json.message)
+  })
+
+  it('requires a special character in new passwords, but never blocks login with an old one', async () => {
+    const c = new TestClient()
+    const weak = await c.call(register, 'POST', '/api/v1/auth/register', { fullName: 'Weak Pass', username: 'weakpass', email: 'w@x.com', password: 'nospecial123' })
+    expect(weak.status).toBe(400)
+    expect(weak.json.details).toEqual([{ path: 'password', message: 'Include a special character, like ! @ # $ %' }])
+    expect(FakeUser.all()).toHaveLength(0)
+    for (const ok of ['pass word 1!', 'unicode-é1', 'tilde~tilde1', 'under_score1']) {
+      FakeUser.reset()
+      expect((await c.call(register, 'POST', '/api/v1/auth/register', { fullName: 'Ok Pass', username: 'okpass', email: 'o@x.com', password: ok })).status).toBe(201)
+    }
+    // Spaces and letters/digits alone are not "special".
+    for (const bad of ['has space 123', 'lettersonlyhere', '12345678', 'ünïcödé123']) {
+      expect((await c.call(register, 'POST', '/api/v1/auth/register', { fullName: 'Bad Pass', username: 'badpass', email: 'b2@x.com', password: bad })).status).toBe(400)
+    }
+
+    // An account from before the rule existed keeps working.
+    await FakeUser.create({
+      fullName: 'Old Timer',
+      username: 'oldtimer',
+      email: 'old@x.com',
+      password: await bcrypt.hash('legacypassword1', 4),
+      hasPassword: true,
+      // no emailVerified field at all: created before verification existed
+    })
+    expect((await new TestClient().call(login, 'POST', '/api/v1/auth/login', { identifier: 'oldtimer', password: 'legacypassword1' })).status).toBe(200)
   })
 
   it('rate limits repeated auth attempts', async () => {
@@ -167,15 +240,71 @@ describe('profile', () => {
   it('changes password, keeps this device signed in, signs out other devices', async () => {
     const { c, user } = await signedIn()
     const other = new TestClient()
-    await other.call(login, 'POST', '/api/v1/auth/login', { identifier: user.username, password: 'supersecret1' })
+    await other.call(login, 'POST', '/api/v1/auth/login', { identifier: user.username, password: 'supersecret1!' })
     expect((await other.call(me, 'GET', '/api/v1/auth/me')).status).toBe(200)
 
-    expect((await c.call(password, 'PATCH', '/api/v1/users/me/password', { currentPassword: 'wrong-one', newPassword: 'brandnew123' })).status).toBe(400)
-    expect((await c.call(password, 'PATCH', '/api/v1/users/me/password', { currentPassword: 'supersecret1', newPassword: 'brandnew123' })).status).toBe(200)
+    expect((await c.call(password, 'PATCH', '/api/v1/users/me/password', { currentPassword: 'wrong-one', newPassword: 'brandnew123!' })).status).toBe(400)
+    expect((await c.call(password, 'PATCH', '/api/v1/users/me/password', { currentPassword: 'supersecret1!', newPassword: 'brandnew123!' })).status).toBe(200)
 
     expect((await c.call(me, 'GET', '/api/v1/auth/me')).status).toBe(200)
     expect((await other.call(me, 'GET', '/api/v1/auth/me')).status).toBe(401)
-    expect((await new TestClient().call(login, 'POST', '/api/v1/auth/login', { identifier: user.username, password: 'brandnew123' })).status).toBe(200)
+    expect((await new TestClient().call(login, 'POST', '/api/v1/auth/login', { identifier: user.username, password: 'brandnew123!' })).status).toBe(200)
+  })
+
+  it('rejects a new password without a special character when changing it', async () => {
+    const { c } = await signedIn()
+    const res = await c.call(password, 'PATCH', '/api/v1/users/me/password', { currentPassword: 'supersecret1!', newPassword: 'nospecial12345' })
+    expect(res.status).toBe(400)
+    expect(res.json.details?.[0]).toMatchObject({ path: 'newPassword', message: 'Include a special character, like ! @ # $ %' })
+  })
+
+  it('a new email waits in pendingEmail until its link is opened; login keeps working meanwhile', async () => {
+    const { c, user } = await signedIn({ username: 'mover', email: 'old@example.com' })
+    const res = await c.call(usersMe.PATCH, 'PATCH', '/api/v1/users/me', { email: 'New@Example.com', bio: 'moving' })
+    expect(res.status).toBe(200)
+    expect(res.json.message).toContain('new@example.com')
+    expect(res.json.body).toMatchObject({ email: 'old@example.com', pendingEmail: 'new@example.com', bio: 'moving' })
+    expect(sentTo('new@example.com')).toBe(1)
+    expect(sentTo('old@example.com')).toBe(1) // only the sign-up email; nothing went to the old address
+
+    // Still logs in with the old address; the new one isn't theirs yet.
+    expect((await new TestClient().call(login, 'POST', '/api/v1/auth/login', { identifier: 'old@example.com', password: 'supersecret1!' })).status).toBe(200)
+    expect((await new TestClient().call(login, 'POST', '/api/v1/auth/login', { identifier: 'new@example.com', password: 'supersecret1!' })).status).toBe(401)
+
+    const verified = await new TestClient().call(verifyEmail, 'POST', '/x', { token: tokenOf(lastEmail('new@example.com')!) })
+    expect(verified.status).toBe(200)
+    expect(verified.json.body).toEqual({ email: 'new@example.com' })
+    const now = (await c.call(me, 'GET', '/api/v1/auth/me')).json.body
+    expect(now).toMatchObject({ _id: user._id, email: 'new@example.com', pendingEmail: null, emailVerified: true })
+    expect((await new TestClient().call(login, 'POST', '/api/v1/auth/login', { identifier: 'new@example.com', password: 'supersecret1!' })).status).toBe(200)
+    expect((await new TestClient().call(login, 'POST', '/api/v1/auth/login', { identifier: 'old@example.com', password: 'supersecret1!' })).status).toBe(401)
+  })
+
+  it('typing the current email back cancels a pending change; someone else’s email is refused', async () => {
+    await signedIn({ email: 'taken@example.com' })
+    const { c } = await signedIn({ email: 'mine@example.com' })
+    expect((await c.call(usersMe.PATCH, 'PATCH', '/api/v1/users/me', { email: 'taken@example.com' })).status).toBe(409)
+    await c.call(usersMe.PATCH, 'PATCH', '/api/v1/users/me', { email: 'next@example.com' })
+    const cancelled = await c.call(usersMe.PATCH, 'PATCH', '/api/v1/users/me', { email: 'mine@example.com' })
+    expect(cancelled.json.body).toMatchObject({ email: 'mine@example.com', pendingEmail: null })
+  })
+
+  it('if the new address is claimed before its link is used, the change fails', async () => {
+    const { c } = await signedIn({ email: 'first@example.com' })
+    await c.call(usersMe.PATCH, 'PATCH', '/api/v1/users/me', { email: 'contested@example.com' })
+    const token = tokenOf(lastEmail('contested@example.com')!)
+    await signedIn({ email: 'contested@example.com' }) // someone else registers it first
+    const res = await new TestClient().call(verifyEmail, 'POST', '/x', { token })
+    expect(res.status).toBe(409)
+    expect((await c.call(me, 'GET', '/api/v1/auth/me')).json.body.email).toBe('first@example.com')
+  })
+
+  it('a password change also cancels an unused reset link', async () => {
+    const { c, user } = await signedIn()
+    await new TestClient().call(forgotPassword, 'POST', '/x', { email: user.email })
+    const token = tokenOf(lastEmail(user.email)!)
+    expect((await c.call(password, 'PATCH', '/api/v1/users/me/password', { currentPassword: 'supersecret1!', newPassword: 'brandnew123!' })).status).toBe(200)
+    expect((await new TestClient().call(resetPassword, 'POST', '/x', { token, newPassword: 'hijacked123!' })).status).toBe(400)
   })
 
   it('reports hasPassword from the password itself, even without the stored flag', async () => {
@@ -192,10 +321,307 @@ describe('profile', () => {
     const { c } = await signedIn()
     await add(c, { title: 'Goes away' })
     expect((await c.call(usersMe.DELETE, 'DELETE', '/api/v1/users/me', { password: 'wrong' })).status).toBe(400)
-    expect((await c.call(usersMe.DELETE, 'DELETE', '/api/v1/users/me', { password: 'supersecret1' })).status).toBe(200)
+    expect((await c.call(usersMe.DELETE, 'DELETE', '/api/v1/users/me', { password: 'supersecret1!' })).status).toBe(200)
     expect(FakeUser.all()).toHaveLength(0)
     expect(FakeTodo.all()).toHaveLength(0)
     expect((await c.call(me, 'GET', '/api/v1/auth/me')).status).toBe(401)
+  })
+})
+
+describe('email verification', () => {
+  const creds = { fullName: 'New Person', username: 'newperson', email: 'new@x.com', password: 'supersecret1!' }
+  const tryLogin = (identifier: string, pw = creds.password) => new TestClient().call(login, 'POST', '/api/v1/auth/login', { identifier, password: pw })
+
+  async function signUp(overrides: Partial<typeof creds> = {}) {
+    const res = await new TestClient().call(register, 'POST', '/api/v1/auth/register', { ...creds, ...overrides })
+    expect(res.status).toBe(201)
+    return tokenOf(lastEmail((overrides.email ?? creds.email).toLowerCase())!)
+  }
+
+  it('blocks login until the address is verified, then lets you in', async () => {
+    const token = await signUp()
+
+    const blocked = await tryLogin('new@x.com')
+    expect(blocked.status).toBe(403)
+    expect(blocked.json.code).toBe('email_not_verified')
+    expect(blocked.json.message).toMatch(/verify your email/i)
+    expect(blocked.cookieSet).toBeUndefined()
+    expect((await tryLogin('newperson')).status).toBe(403) // by username too
+
+    // The unverified state is only revealed to someone who knows the password.
+    const wrong = await tryLogin('new@x.com', 'wrong-password!')
+    const ghost = await tryLogin('nobody@x.com', 'wrong-password!')
+    expect(wrong.status).toBe(401)
+    expect(wrong.json.message).toBe(ghost.json.message)
+    expect(wrong.json.code).toBeUndefined()
+
+    const verified = await new TestClient().call(verifyEmail, 'POST', '/api/v1/auth/verify-email', { token })
+    expect(verified.status).toBe(200)
+    expect(verified.json.body).toEqual({ email: 'new@x.com' })
+    expect(FakeUser.all()[0].verifyTokenHash).toBeNull()
+
+    const ok = await tryLogin('new@x.com')
+    expect(ok.status).toBe(200)
+    expect(ok.json.body).toMatchObject({ username: 'newperson', emailVerified: true })
+    expect(ok.json.body.verifyTokenHash).toBeUndefined()
+  })
+
+  it('links are single-use, expire, and a wrong token gets nothing', async () => {
+    const token = await signUp()
+    const verify = (t: string) => new TestClient().call(verifyEmail, 'POST', '/x', { token: t })
+
+    expect((await verify('x'.repeat(43))).status).toBe(400) // right shape, wrong token
+    expect((await verify('short')).status).toBe(400) // wrong shape
+    expect((await verify(token)).status).toBe(200)
+    const reuse = await verify(token)
+    expect(reuse.status).toBe(400)
+    expect(reuse.json.code).toBe('invalid_token')
+
+    // Expired: a fresh account whose link is a day and a bit old.
+    FakeUser.reset()
+    const stale = await signUp()
+    FakeUser.all()[0].verifyTokenExpires = new Date(Date.now() - 1000)
+    const expired = await verify(stale)
+    expect(expired.status).toBe(400)
+    expect(expired.json.code).toBe('invalid_token')
+    expect((await tryLogin('new@x.com')).status).toBe(403) // still unverified
+  })
+
+  it('resending gives a fresh link and kills the old one; the answer never reveals who has an account', async () => {
+    const first = await signUp()
+    const resend = (identifier: string) => new TestClient().call(resendVerification, 'POST', '/x', { identifier })
+
+    const again = await resend('NewPerson')
+    expect(again.status).toBe(200)
+    expect(sentTo('new@x.com')).toBe(2)
+    const second = tokenOf(lastEmail('new@x.com')!)
+    expect(second).not.toBe(first)
+    expect((await new TestClient().call(verifyEmail, 'POST', '/x', { token: first })).status).toBe(400)
+
+    const ghost = await resend('ghost@x.com')
+    expect(ghost.json.message).toBe(again.json.message)
+    expect(outbox).toHaveLength(2) // nothing sent for an unknown account
+
+    expect((await new TestClient().call(verifyEmail, 'POST', '/x', { token: second })).status).toBe(200)
+    const done = await resend('new@x.com')
+    expect(done.json.message).toBe(again.json.message)
+    expect(outbox).toHaveLength(2) // and nothing for an account that is already verified
+  })
+
+  it('limits how often one address can be emailed', async () => {
+    await signUp()
+    const c = new TestClient()
+    const statuses: number[] = []
+    for (let i = 0; i < 4; i++) statuses.push((await c.call(resendVerification, 'POST', '/x', { identifier: 'new@x.com' })).status)
+    expect(statuses).toEqual([200, 200, 200, 429])
+    expect(sentTo('new@x.com')).toBe(4) // sign-up + 3 resends
+  })
+
+  it('accounts made before verification existed can still log in', async () => {
+    await FakeUser.create({ fullName: 'Old Timer', username: 'oldtimer', email: 'old@x.com', password: await bcrypt.hash('legacypassword1', 4), hasPassword: true })
+    const res = await tryLogin('old@x.com', 'legacypassword1')
+    expect(res.status).toBe(200)
+    expect(res.json.body.emailVerified).toBe(true)
+  })
+
+  it('a provider outage does not break sign-up: the account exists and "Resend" works later', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"message":"provider down"}', { status: 500 })))
+    const res = await new TestClient().call(register, 'POST', '/x', creds)
+    expect(res.status).toBe(201)
+    expect(res.json.body).toEqual({ email: 'new@x.com', verificationSent: false })
+    expect(error).toHaveBeenCalled()
+    expect(FakeUser.all()).toHaveLength(1)
+
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { body?: string }) => (outbox.push(JSON.parse(String(init?.body))), new Response('{}', { status: 200 }))))
+    await new TestClient().call(resendVerification, 'POST', '/x', { identifier: 'new@x.com' })
+    expect((await new TestClient().call(verifyEmail, 'POST', '/x', { token: tokenOf(lastEmail('new@x.com')!) })).status).toBe(200)
+  })
+
+  it('without an email provider: development prints the link, production refuses instead of pretending', async () => {
+    vi.stubEnv('RESEND_API_KEY', '')
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+
+    const dev = await new TestClient().call(register, 'POST', '/x', creds)
+    expect(dev.status).toBe(201)
+    expect(dev.json.body.verificationSent).toBe(true)
+    expect(String(info.mock.calls[0][0])).toContain('/verify-email?token=')
+    expect(outbox).toHaveLength(0)
+
+    FakeUser.reset()
+    resetUsernameFilter()
+    vi.stubEnv('NODE_ENV', 'production')
+    const prod = await new TestClient().call(register, 'POST', '/x', creds)
+    expect(prod.status).toBe(503)
+    expect(FakeUser.all()).toHaveLength(0) // nothing half-created
+    expect((await new TestClient().call(forgotPassword, 'POST', '/x', { email: 'new@x.com' })).status).toBe(503)
+    expect((await new TestClient().call(resendVerification, 'POST', '/x', { identifier: 'new@x.com' })).status).toBe(503)
+  })
+
+  it('links point at APP_URL, never at the Host header the request arrived with', async () => {
+    vi.stubEnv('APP_URL', 'https://taskora.example/')
+    const req = new NextRequest('http://evil.example/api/v1/auth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', host: 'evil.example', 'x-forwarded-host': 'evil.example', 'x-forwarded-for': '10.9.9.9' },
+      body: JSON.stringify(creds),
+    })
+    expect((await register(req, { params: Promise.resolve({}) })).status).toBe(201)
+    expect(lastEmail('new@x.com')!.text).toContain('https://taskora.example/verify-email?token=')
+    expect(lastEmail('new@x.com')!.text).not.toContain('evil.example')
+  })
+
+  it('escapes the name in the HTML email', async () => {
+    await signUp({ fullName: '<b>Bold</b> "Name"' })
+    const html = lastEmail('new@x.com')!.html
+    expect(html).not.toContain('<b>Bold</b>')
+    expect(html).toContain('&lt;b&gt;Bold&lt;/b&gt;')
+  })
+
+  it('signing in with Google proves the address: it verifies the account and discards a stranger’s password', async () => {
+    // Someone registered this address with a password but never confirmed it.
+    await signUp({ email: 'chloe.egbukwu@gmail.com', password: 'attackerpass1!' })
+    const staleLink = tokenOf(lastEmail('chloe.egbukwu@gmail.com')!)
+    process.env.GOOGLE_CLIENT_ID = 'test-client'
+    process.env.GOOGLE_CLIENT_SECRET = 'test-secret'
+    try {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string) =>
+          String(url).includes('oauth2.googleapis.com/token')
+            ? new Response(JSON.stringify({ access_token: 'at' }), { status: 200 })
+            : new Response(JSON.stringify({ sub: 'google-9', email: 'chloe.egbukwu@gmail.com', email_verified: true, name: 'Chloe Egbukwu' }), { status: 200 })
+        )
+      )
+      const c = new TestClient()
+      const start = await c.raw(googleStart, 'GET', '/api/v1/auth/google')
+      const state = new URL(start.headers.get('location')!).searchParams.get('state')
+      const cb = await c.raw(googleCallback, 'GET', `/api/v1/auth/google/callback?code=abc&state=${state}`)
+      expect(cb.headers.get('location')).toContain('/dashboard')
+      expect(FakeUser.all()).toHaveLength(1)
+      expect((await c.call(me, 'GET', '/api/v1/auth/me')).json.body).toMatchObject({ googleLinked: true, emailVerified: true, hasPassword: false })
+    } finally {
+      delete process.env.GOOGLE_CLIENT_ID
+      delete process.env.GOOGLE_CLIENT_SECRET
+    }
+    expect((await tryLogin('chloe.egbukwu@gmail.com', 'attackerpass1!')).status).toBe(401) // their password is gone
+    expect((await new TestClient().call(verifyEmail, 'POST', '/x', { token: staleLink })).status).toBe(400)
+  })
+})
+
+describe('forgot and reset password', () => {
+  const forgot = (email: string) => new TestClient().call(forgotPassword, 'POST', '/api/v1/auth/forgot-password', { email })
+  const reset = (token: string, newPassword: string) => new TestClient().call(resetPassword, 'POST', '/api/v1/auth/reset-password', { token, newPassword })
+  const tryLogin = (identifier: string, pw: string) => new TestClient().call(login, 'POST', '/x', { identifier, password: pw })
+
+  it('gives the same answer for known and unknown emails, and only emails real accounts', async () => {
+    const { user } = await signedIn()
+    const before = outbox.length
+    const ghost = await forgot('nobody@example.com')
+    expect(ghost.status).toBe(200)
+    expect(outbox).toHaveLength(before)
+
+    const real = await forgot(user.email)
+    expect(real.status).toBe(200)
+    expect(real.json.message).toBe(ghost.json.message)
+    expect(outbox).toHaveLength(before + 1)
+    const mail = lastEmail(user.email)!
+    expect(mail.subject).toBe('Reset your Taskora password')
+    expect(mail.text).toContain('http://localhost:3000/reset-password?token=')
+    expect(FakeUser.all()[0].resetTokenHash).toMatch(/^[a-f0-9]{64}$/) // stored hashed, never the token
+    expect(JSON.stringify(FakeUser.all()[0])).not.toContain(tokenOf(mail))
+    expect(FakeUser.all()[0].resetTokenExpires.getTime() - Date.now()).toBeLessThanOrEqual(30 * 60_000)
+    expect((await forgot('not-an-email')).status).toBe(400)
+  })
+
+  it('resets the password: old one stops working, every device is signed out, the link works once', async () => {
+    const { c, user } = await signedIn()
+    const other = new TestClient()
+    await other.call(login, 'POST', '/x', { identifier: user.username, password: 'supersecret1!' })
+    await forgot(user.email)
+    const token = tokenOf(lastEmail(user.email)!)
+
+    // A weak password is refused WITHOUT using up the link.
+    const weak = await reset(token, 'nospecial12345')
+    expect(weak.status).toBe(400)
+    expect(weak.json.details?.[0].path).toBe('newPassword')
+    expect((await reset(token, 'short!')).status).toBe(400)
+
+    const done = await reset(token, 'a-brand-new-pass1')
+    expect(done.status).toBe(200)
+    expect(done.cookieSet).toBeUndefined() // not signed in; they log in with the new password
+    expect((await tryLogin(user.username, 'supersecret1!')).status).toBe(401)
+    expect((await tryLogin(user.email, 'a-brand-new-pass1')).status).toBe(200)
+    expect((await c.call(me, 'GET', '/api/v1/auth/me')).status).toBe(401)
+    expect((await other.call(me, 'GET', '/api/v1/auth/me')).status).toBe(401)
+
+    const reuse = await reset(token, 'another-new-pass1!')
+    expect(reuse.status).toBe(400)
+    expect(reuse.json.code).toBe('invalid_token')
+    expect((await tryLogin(user.username, 'another-new-pass1!')).status).toBe(401)
+  })
+
+  it('rejects expired, wrong and wrong-kind tokens', async () => {
+    const { user } = await signedIn()
+    await forgot(user.email)
+    const token = tokenOf(lastEmail(user.email)!)
+
+    expect((await reset('y'.repeat(43), 'a-brand-new-pass1')).status).toBe(400)
+    expect((await reset('short', 'a-brand-new-pass1')).status).toBe(400)
+    FakeUser.all()[0].resetTokenExpires = new Date(Date.now() - 1000)
+    const expired = await reset(token, 'a-brand-new-pass1')
+    expect(expired.status).toBe(400)
+    expect(expired.json.code).toBe('invalid_token')
+    expect((await tryLogin(user.username, 'supersecret1!')).status).toBe(200) // password unchanged
+
+    // An email-verification link can't be used to reset a password.
+    FakeUser.reset()
+    await new TestClient().call(register, 'POST', '/x', { fullName: 'Other One', username: 'otherone', email: 'other@x.com', password: 'supersecret1!' })
+    expect((await reset(tokenOf(lastEmail('other@x.com')!), 'a-brand-new-pass1')).status).toBe(400)
+  })
+
+  it('a newer link replaces the older one', async () => {
+    const { user } = await signedIn()
+    await forgot(user.email)
+    const first = tokenOf(lastEmail(user.email)!)
+    await forgot(user.email)
+    const second = tokenOf(lastEmail(user.email)!)
+    expect(second).not.toBe(first)
+    expect((await reset(first, 'a-brand-new-pass1')).status).toBe(400)
+    expect((await reset(second, 'a-brand-new-pass1')).status).toBe(200)
+  })
+
+  it('resetting also proves the address, so someone who never verified can get back in', async () => {
+    await new TestClient().call(register, 'POST', '/x', { fullName: 'Forgetful One', username: 'forgetful', email: 'f@x.com', password: 'supersecret1!' })
+    expect((await tryLogin('forgetful', 'supersecret1!')).status).toBe(403)
+    await forgot('f@x.com')
+    expect((await reset(tokenOf(lastEmail('f@x.com')!), 'a-brand-new-pass1')).status).toBe(200)
+    expect((await tryLogin('forgetful', 'a-brand-new-pass1')).status).toBe(200)
+  })
+
+  it('an unfinished email change is cancelled by a reset', async () => {
+    const { c, user } = await signedIn()
+    await c.call(usersMe.PATCH, 'PATCH', '/x', { email: 'sneaky@example.com' })
+    const changeLink = tokenOf(lastEmail('sneaky@example.com')!)
+    await forgot(user.email)
+    expect((await reset(tokenOf(lastEmail(user.email)!), 'a-brand-new-pass1')).status).toBe(200)
+    expect((await new TestClient().call(verifyEmail, 'POST', '/x', { token: changeLink })).status).toBe(400)
+    expect(FakeUser.all()[0].email).toBe(user.email)
+  })
+
+  it('a Google-only account can use a reset link to set its first password', async () => {
+    await FakeUser.create({ fullName: 'Goo Gle', username: 'googleonly', email: 'g@x.com', googleId: 'g-1', hasPassword: false, emailVerified: true })
+    expect((await tryLogin('googleonly', 'anything123!')).status).toBe(401)
+    await forgot('g@x.com')
+    expect((await reset(tokenOf(lastEmail('g@x.com')!), 'a-brand-new-pass1')).status).toBe(200)
+    expect((await tryLogin('googleonly', 'a-brand-new-pass1')).status).toBe(200)
+  })
+
+  it('limits how many reset emails one address can trigger', async () => {
+    const { user } = await signedIn()
+    const c = new TestClient()
+    const statuses: number[] = []
+    for (let i = 0; i < 4; i++) statuses.push((await c.call(forgotPassword, 'POST', '/x', { email: user.email })).status)
+    expect(statuses).toEqual([200, 200, 200, 429])
   })
 })
 
@@ -251,7 +677,7 @@ describe('profile photo', () => {
   it('is deleted with the account', async () => {
     const { c } = await signedIn()
     await c.upload(avatar.PUT, url, png, 'image/png')
-    await c.call(usersMe.DELETE, 'DELETE', '/api/v1/users/me', { password: 'supersecret1' })
+    await c.call(usersMe.DELETE, 'DELETE', '/api/v1/users/me', { password: 'supersecret1!' })
     expect(FakeUser.all()).toHaveLength(0)
   })
 })
@@ -446,7 +872,7 @@ describe('trash', () => {
     const { c } = await signedIn()
     const t = await add(c, { title: 'Trashed' })
     await c.call(todoById.DELETE, 'DELETE', '/x', undefined, { id: t._id })
-    await c.call(usersMe.DELETE, 'DELETE', '/api/v1/users/me', { password: 'supersecret1' })
+    await c.call(usersMe.DELETE, 'DELETE', '/api/v1/users/me', { password: 'supersecret1!' })
     expect(FakeTodo.all()).toHaveLength(0)
   })
 })
@@ -457,7 +883,11 @@ describe('google sign-in', () => {
   function mockGoogle(p: object = profile, tokenOk = true) {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string, init?: { body?: URLSearchParams }) => {
+      vi.fn(async (url: string, init?: { body?: URLSearchParams | string }) => {
+        if (url.includes('api.resend.com')) {
+          outbox.push(JSON.parse(String(init?.body)))
+          return new Response('{"id":"email_1"}', { status: 200 })
+        }
         if (url.includes('oauth2.googleapis.com/token')) {
           // PKCE: the verifier must be sent with the code
           expect(String(init?.body)).toContain('code_verifier=')
@@ -494,7 +924,7 @@ describe('google sign-in', () => {
     const { c, location } = await signInWithGoogle()
     expect(new URL(location).pathname).toBe('/tasks') // honours ?next
     const me = (await c.call((await import('@/app/api/v1/auth/me/route')).GET, 'GET', '/api/v1/auth/me')).json.body
-    expect(me).toMatchObject({ username: 'chloeegbukwu', email: 'chloe.egbukwu@gmail.com', fullName: 'Chloe Egbukwu', hasPassword: false, googleLinked: true })
+    expect(me).toMatchObject({ username: 'chloeegbukwu', email: 'chloe.egbukwu@gmail.com', fullName: 'Chloe Egbukwu', hasPassword: false, googleLinked: true, emailVerified: true })
     expect(me.googleId).toBeUndefined()
   })
 
@@ -548,11 +978,11 @@ describe('google sign-in', () => {
     const { c } = await signInWithGoogle()
     expect((await new TestClient().call(login, 'POST', '/api/v1/auth/login', { identifier: 'chloeegbukwu', password: 'anything12' })).status).toBe(401)
 
-    const set = await c.call(password, 'PATCH', '/api/v1/users/me/password', { newPassword: 'mynewpass1' })
+    const set = await c.call(password, 'PATCH', '/api/v1/users/me/password', { newPassword: 'mynewpass1!' })
     expect(set.json.message).toBe('Password set')
-    expect((await new TestClient().call(login, 'POST', '/api/v1/auth/login', { identifier: 'chloeegbukwu', password: 'mynewpass1' })).status).toBe(200)
+    expect((await new TestClient().call(login, 'POST', '/api/v1/auth/login', { identifier: 'chloeegbukwu', password: 'mynewpass1!' })).status).toBe(200)
     // now it has a password, so changing it requires the current one
-    expect((await c.call(password, 'PATCH', '/api/v1/users/me/password', { newPassword: 'another123' })).status).toBe(400)
+    expect((await c.call(password, 'PATCH', '/api/v1/users/me/password', { newPassword: 'another123!' })).status).toBe(400)
   })
 
   it('Google-only accounts confirm deletion with their username', async () => {
