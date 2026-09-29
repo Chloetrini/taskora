@@ -252,7 +252,7 @@ src/
     config/env.ts, db.ts        # env validation (lazy), cached Mongoose connection
     models/                     # *.model.ts — Mongoose schemas
     controllers/                # *.controller.ts — the actual request logic
-    services/                   # *.service.ts — username bloom filter, email.service (Resend), email-templates, account-email
+    services/                   # *.service.ts — username bloom filter, email.service (Brevo), email-templates, account-email
     lib/                        # http.ts (envelope, route wrapper, parsing), session.ts, auth.ts, rate-limit.ts, helpers.ts
     test/                       # fake-model.ts, client.ts (TestClient), api.test.ts, empty.ts
   views/                        # one client component per page: *-view.tsx
@@ -401,7 +401,7 @@ filters and stats are calendar-day based and the server can't know the user's ti
 
 Files: `controllers/email-auth.controller.ts` (verify, resend, forgot, reset),
 `services/account-email.service.ts` (make a token, store its hash, send),
-`services/email.service.ts` (Resend over `fetch`, no SDK), `services/email-templates.ts`,
+`services/email.service.ts` (Brevo's transactional API over `fetch`, no SDK), `services/email-templates.ts`,
 `lib/tokens.ts`. Register/login/profile/Google changes are in their own controllers.
 
 - **Tokens:** 256 random bits (`base64url`) in the email; only the **SHA-256 hash** and an
@@ -422,15 +422,19 @@ Files: `controllers/email-auth.controller.ts` (verify, resend, forgot, reset),
   pending email change and its link. **Changing your password** clears an unused reset link.
 - **`pendingEmail`:** see Section 1.5. The verify endpoint applies it (and re-checks the address
   isn't taken by then: 409 `email_taken`).
-- **Email transport:** `RESEND_API_KEY` + `EMAIL_FROM` (default `Taskora <onboarding@resend.dev>`).
-  Development without a key prints the email (link included) to the terminal. **Production without
-  a key answers 503 before creating anything** (`assertEmailReady`) rather than pretend to send.
-  `/api/health` shows `email: configured`.
-- **Resend sandbox:** `onboarding@resend.dev` only delivers to the Resend account owner. For real
-  users, verify a domain in Resend and set `EMAIL_FROM` to an address on it. Until then new users
-  can't receive their link, and because login requires verification **they can't log in**.
-  A provider failure at sign-up doesn't lose the account: the response says
-  `verificationSent: false` and the page offers Resend (the reason is in the server log).
+- **Email transport:** Brevo, `POST https://api.brevo.com/v3/smtp/email` with the `api-key` header.
+  Needs **both** `BREVO_API_KEY` (an API key, "xkeysib-…", from SMTP & API → API keys; not the SMTP
+  password) and `EMAIL_FROM` (`Taskora <me@example.com>` or a bare address, parsed by `parseSender`).
+  Development without them prints the email (link included) to the terminal. **Production without
+  them answers 503 before creating anything** (`assertEmailReady`) rather than pretend to send.
+  `/api/health` shows `email: configured`. Swapping providers means rewriting `sendEmail()` only.
+- **Brevo sender:** `EMAIL_FROM` must be a sender verified in Brevo (Senders, domains & dedicated IPs);
+  any other address is rejected (400) and the reason is in the server log (`Brevo responded 400: …`,
+  never the API key). Free plan: 300 emails/day. **A Yahoo/Gmail-style address as the sender is
+  unreliable**: those providers publish strict DMARC policies, so mail "from" them that is sent
+  through Brevo can land in spam or be rejected. Verify a domain in Brevo (add its DNS records) and
+  send from an address on it as soon as there is one. A provider failure at sign-up doesn't lose the
+  account: the response says `verificationSent: false` and the page offers Resend.
 
 ### 4.6 Username bloom filter (`server/services/username-bloom.service.ts`)
 
@@ -679,7 +683,7 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
   the link, wrong-kind tokens, per-address limit), pending email changes, the special-character
   rule, task privacy, filters, sorting, stats, and validation.
 - **Test helpers:** every `TestClient` gets its own IP (per-IP rate limits don't couple people);
-  `signedIn()` registers, marks the address verified, then logs in; `beforeEach` stubs Resend's
+  `signedIn()` registers, marks the address verified, then logs in; `beforeEach` stubs Brevo's
   HTTP API into `outbox` (`lastEmail`, `tokenOf`, `sentTo`). New code that sends mail is tested
   through that outbox.
 - The tests import the **real route handlers** from `src/app/api/**/route.ts`
@@ -790,10 +794,10 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
    - `SESSION_SECRET` — 32+ random characters (`openssl rand -base64 32`)
    - Optional, for Google sign-in: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
      and `APP_URL` (e.g. `https://taskora.vercel.app`, no trailing slash).
-   - For sign-up emails and password reset: `RESEND_API_KEY` and `EMAIL_FROM`
-     (e.g. `Taskora <no-reply@yourdomain.com>`). **Verify that domain in Resend first**
-     (Resend → Domains → add the DNS records); the default sender only reaches the
-     Resend account owner. Without `RESEND_API_KEY`, sign-up answers 503.
+   - For sign-up emails and password reset: `BREVO_API_KEY` and `EMAIL_FROM`
+     (e.g. `Taskora <you@yourdomain.com>`). The sender must be verified in Brevo first
+     (Senders, domains & dedicated IPs); see Section 4.5c for the Yahoo/Gmail caveat.
+     Without both, sign-up answers 503.
    **Set `APP_URL` even without Google**: canonical links, the sitemap and share
    previews use it (Section 6b)
 5. Deploy, then open `/api/health` → `"database": "connected"` and `"email": "configured"`.
@@ -894,7 +898,8 @@ Update the status here when a milestone is finished.
 - Email verification on sign-up — **required before login** (stricter than the original
   "unverified users can use the app with a banner", at the user's request); accounts from before
   it are grandfathered. Changing your email goes through a pending address.
-- Email via Resend; `RESEND_API_KEY` / `EMAIL_FROM` in the env docs.
+- Email via Brevo (first written for Resend, switched because Resend needs a verified domain);
+  `BREVO_API_KEY` / `EMAIL_FROM` in the env docs.
 - Also done alongside: special character required in new passwords; redesigned mobile menu;
   outside-press dismissal everywhere (`useDismiss`).
 - **Done when:** tests cover token expiry, reuse and a wrong token; login still gives one generic error. ✔

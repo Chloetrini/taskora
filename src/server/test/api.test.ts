@@ -35,9 +35,27 @@ const resetPassword = (await import('@/app/api/v1/auth/reset-password/route')).P
 const googleStart = (await import('@/app/api/v1/auth/google/route')).GET
 const googleCallback = (await import('@/app/api/v1/auth/google/callback/route')).GET
 
-// Every email the app "sends" lands here (Resend's HTTP API is stubbed in beforeEach).
+// Every email the app "sends" lands here (Brevo's HTTP API is stubbed in beforeEach).
 type Sent = { from: string; to: string[]; subject: string; html: string; text: string }
 const outbox: Sent[] = []
+// The raw requests too, to check what Brevo would actually receive.
+const brevoCalls: { url: string; headers: Record<string, string>; body: any }[] = []
+
+const BREVO_URL = 'https://api.brevo.com/v3/smtp/email'
+/** If this fetch is a Brevo send: record it and answer like Brevo does (201). Otherwise undefined. */
+function recordBrevoSend(url: string, init?: { body?: unknown; headers?: Record<string, string> }): Response | undefined {
+  if (String(url) !== BREVO_URL) return undefined
+  const body = JSON.parse(String(init?.body))
+  brevoCalls.push({ url: String(url), headers: init?.headers ?? {}, body })
+  outbox.push({
+    from: `${body.sender.name} <${body.sender.email}>`,
+    to: body.to.map((t: { email: string }) => t.email),
+    subject: body.subject,
+    html: body.htmlContent,
+    text: body.textContent,
+  })
+  return new Response('{"messageId":"<1@smtp-relay.brevo.com>"}', { status: 201 })
+}
 const lastEmail = (to?: string) => [...outbox].reverse().find(m => !to || m.to.includes(to))
 const tokenOf = (mail: Sent) => new URL(/https?:\/\/\S+/.exec(mail.text)![0]).searchParams.get('token')!
 const sentTo = (to: string) => outbox.filter(m => m.to.includes(to)).length
@@ -73,13 +91,15 @@ const titles = (c: InstanceType<typeof TestClient>, qs: string) =>
 
 beforeEach(() => {
   outbox.length = 0
-  vi.stubEnv('RESEND_API_KEY', 'test-key')
+  brevoCalls.length = 0
+  vi.stubEnv('BREVO_API_KEY', 'test-key')
+  vi.stubEnv('EMAIL_FROM', 'Taskora <sender@example.com>')
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: { body?: string }) => {
-      if (!String(url).includes('api.resend.com')) throw new Error(`unexpected fetch: ${url}`)
-      outbox.push(JSON.parse(String(init?.body)))
-      return new Response('{"id":"email_1"}', { status: 200 })
+      const sent = recordBrevoSend(url, init)
+      if (!sent) throw new Error(`unexpected fetch: ${url}`)
+      return sent
     })
   )
   FakeUser.reset()
@@ -431,15 +451,18 @@ describe('email verification', () => {
     expect(res.status).toBe(201)
     expect(res.json.body).toEqual({ email: 'new@x.com', verificationSent: false })
     expect(error).toHaveBeenCalled()
+    // The log says what Brevo answered (so a wrong sender is easy to spot) and never the API key.
+    expect(JSON.stringify(error.mock.calls)).toContain('Brevo responded 500')
+    expect(JSON.stringify(error.mock.calls)).not.toContain('test-key')
     expect(FakeUser.all()).toHaveLength(1)
 
-    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { body?: string }) => (outbox.push(JSON.parse(String(init?.body))), new Response('{}', { status: 200 }))))
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: { body?: string }) => recordBrevoSend(url, init)!))
     await new TestClient().call(resendVerification, 'POST', '/x', { identifier: 'new@x.com' })
     expect((await new TestClient().call(verifyEmail, 'POST', '/x', { token: tokenOf(lastEmail('new@x.com')!) })).status).toBe(200)
   })
 
   it('without an email provider: development prints the link, production refuses instead of pretending', async () => {
-    vi.stubEnv('RESEND_API_KEY', '')
+    vi.stubEnv('BREVO_API_KEY', '')
     const info = vi.spyOn(console, 'info').mockImplementation(() => undefined)
 
     const dev = await new TestClient().call(register, 'POST', '/x', creds)
@@ -456,6 +479,37 @@ describe('email verification', () => {
     expect(FakeUser.all()).toHaveLength(0) // nothing half-created
     expect((await new TestClient().call(forgotPassword, 'POST', '/x', { email: 'new@x.com' })).status).toBe(503)
     expect((await new TestClient().call(resendVerification, 'POST', '/x', { identifier: 'new@x.com' })).status).toBe(503)
+  })
+
+  it('sends through Brevo: api-key header, the verified sender, HTML and plain text', async () => {
+    await signUp()
+    expect(brevoCalls).toHaveLength(1)
+    const call = brevoCalls[0]
+    expect(call.headers['api-key']).toBe('test-key')
+    expect(call.headers['Content-Type']).toBe('application/json')
+    expect(call.body.sender).toEqual({ name: 'Taskora', email: 'sender@example.com' })
+    expect(call.body.to).toEqual([{ email: 'new@x.com' }])
+    expect(call.body.subject).toBe('Verify your email for Taskora')
+    expect(call.body.htmlContent).toContain('Verify my email')
+    expect(call.body.textContent).toContain('/verify-email?token=')
+  })
+
+  it('EMAIL_FROM accepts "Name <a@b.c>" or a bare address, and anything else counts as not configured', async () => {
+    const { parseSender, emailEnv } = await import('@/server/config/env')
+    expect(parseSender('Taskora <sender@example.com>')).toEqual({ name: 'Taskora', email: 'sender@example.com' })
+    expect(parseSender('"Chloe at Taskora" <c@example.com>')).toEqual({ name: 'Chloe at Taskora', email: 'c@example.com' })
+    expect(parseSender('plain@example.com')).toEqual({ name: 'Taskora', email: 'plain@example.com' })
+    expect(parseSender('<c@example.com>')).toEqual({ name: 'Taskora', email: 'c@example.com' })
+    for (const bad of ['', 'Taskora', 'not an address', 'a@b', 'Name <nope>', 'two@x.com three@x.com']) expect(parseSender(bad)).toBeNull()
+
+    // A key without a sender (or the reverse) can't send: Brevo refuses unverified senders.
+    vi.stubEnv('EMAIL_FROM', '')
+    expect(emailEnv()).toBeNull()
+    vi.stubEnv('EMAIL_FROM', 'sender@example.com')
+    vi.stubEnv('BREVO_API_KEY', '')
+    expect(emailEnv()).toBeNull()
+    vi.stubEnv('BREVO_API_KEY', 'k')
+    expect(emailEnv()).toEqual({ apiKey: 'k', from: { name: 'Taskora', email: 'sender@example.com' } })
   })
 
   it('links point at APP_URL, never at the Host header the request arrived with', async () => {
@@ -884,10 +938,8 @@ describe('google sign-in', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string, init?: { body?: URLSearchParams | string }) => {
-        if (url.includes('api.resend.com')) {
-          outbox.push(JSON.parse(String(init?.body)))
-          return new Response('{"id":"email_1"}', { status: 200 })
-        }
+        const sent = recordBrevoSend(url, init)
+        if (sent) return sent
         if (url.includes('oauth2.googleapis.com/token')) {
           // PKCE: the verifier must be sent with the code
           expect(String(init?.body)).toContain('code_verifier=')

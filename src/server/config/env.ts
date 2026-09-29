@@ -25,15 +25,28 @@ export function googleEnv() {
 }
 
 /**
- * Email (Resend) is optional in development, where messages are printed to the
+ * "Taskora <me@example.com>" or a bare "me@example.com" → { name, email }, or
+ * null if it isn't an address. The name defaults to the product name.
+ */
+export function parseSender(value: string): { name: string; email: string } | null {
+  const text = value.trim()
+  const withName = /^"?([^"<>]*?)"?\s*<([^<>\s@]+@[^<>\s@]+\.[^<>\s@]+)>$/.exec(text)
+  if (withName) return { name: withName[1].trim() || SITE.name, email: withName[2] }
+  if (/^[^<>\s@]+@[^<>\s@]+\.[^<>\s@]+$/.test(text)) return { name: SITE.name, email: text }
+  return null
+}
+
+/**
+ * Email (Brevo) is optional in development, where messages are printed to the
  * terminal instead. In production sign-up and password reset need it: without
- * RESEND_API_KEY those endpoints answer 503 rather than pretend to send.
- * EMAIL_FROM must be an address on a domain verified in Resend (the default
- * onboarding@resend.dev only delivers to the Resend account owner).
+ * both BREVO_API_KEY and EMAIL_FROM those endpoints answer 503 rather than
+ * pretend to send. EMAIL_FROM must be a sender you verified in Brevo
+ * (Senders, domains & dedicated IPs); Brevo rejects any other address.
  */
 export function emailEnv() {
-  const apiKey = process.env.RESEND_API_KEY
-  return apiKey ? { apiKey, from: process.env.EMAIL_FROM || `${SITE.name} <onboarding@resend.dev>` } : null
+  const apiKey = process.env.BREVO_API_KEY
+  const from = parseSender(process.env.EMAIL_FROM ?? '')
+  return apiKey && from ? { apiKey, from } : null
 }
 
 export function env() {
