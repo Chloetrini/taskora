@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import mongoose from 'mongoose'
 import { connectDB } from '@/server/config/db'
-import { emailEnv } from '@/server/config/env'
+import { emailEnv, memcachierEnv } from '@/server/config/env'
 import { checkEmailSetup } from '@/server/services/email.service'
 import { clientIp, LIMITS, rateLimit } from '@/server/lib/rate-limit'
 
@@ -38,6 +38,7 @@ export async function GET(req: NextRequest) {
       status: healthy ? 'ok' : 'error',
       database,
       email: emailEnv() ? 'configured' : 'not configured',
+      cache: memcachierEnv() ? 'configured' : 'not configured',
       ...(emailCheck ? { emailCheck } : {}),
       timestamp: new Date().toISOString(),
     },

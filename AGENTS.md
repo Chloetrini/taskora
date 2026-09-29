@@ -206,6 +206,7 @@ category and priority.
 | Auth | Encrypted httpOnly cookie sessions (iron-session `sealData`), bcryptjs (cost 12) |
 | Validation | zod v4 — **one** shared schema file for client and server |
 | Tests | Vitest (API routes called directly, in-memory fake models) |
+| Cache | MemCachier (memcached) via `memjs`; optional, off when `MEMCACHIER_SERVERS` is unset |
 | Hosting | Vercel |
 
 No JWT in localStorage. No separate Express server. No component library —
@@ -252,7 +253,7 @@ src/
     config/env.ts, db.ts        # env validation (lazy), cached Mongoose connection
     models/                     # *.model.ts — Mongoose schemas
     controllers/                # *.controller.ts — the actual request logic
-    services/                   # *.service.ts — username bloom filter, email.service (Brevo), email-templates, account-email
+    services/                   # *.service.ts — username bloom filter, email.service (Brevo), email-templates, account-email, cache.service (memjs, Eventra's format), user-cache.service (per-user, encrypted, versioned)
     lib/                        # http.ts (envelope, route wrapper, parsing), session.ts, auth.ts, rate-limit.ts, helpers.ts
     test/                       # fake-model.ts, client.ts (TestClient), api.test.ts, empty.ts
   views/                        # one client component per page: *-view.tsx
@@ -473,6 +474,40 @@ change, so blocking must be off), an unverified sender, or transactional sending
 - A Mongo duplicate-key error (11000) becomes a 409 with a field detail — that
   covers two people registering the same username at the same instant.
 
+### 4.7b Read cache (MemCachier)
+
+Optional (same `MEMCACHIER_SERVERS` / `_USERNAME` / `_PASSWORD` variables as Eventra). `GET /todos`,
+`GET /todos/stats` and `GET /todos/trash` are cached for 60 s; responses carry `x-cache: HIT | MISS`
+(absent when the cache is off or paused). Without `MEMCACHIER_SERVERS` nothing changes.
+
+- **Eventra's format, adapted.** `services/cache.service.ts` is Eventra's: lazy `memjs` client with MemCachier
+  SASL, `timeout: 1, retries: 1, failover: false`, `getCache/setCache/deleteCache/flushCache` that **never throw**,
+  key prefix `tk:v1` (Eventra's is `jc:v1`), 60 s default TTL. Eventra caches public pages by URL through
+  middleware; that would leak here, so Taskora's private data goes through `services/user-cache.service.ts`
+  (`cachedForUser`, `invalidateUserCache`, `withCacheHeader`) called from the controllers, never through the raw
+  primitives and never keyed by URL.
+- **Tenant isolation.** Keys are `tk:v1:u:<userId>:v<dataVersion>:<scope>:<sha256 of the query>`; `userId` and
+  `dataVersion` come from `requireUser`. Authentication is never cached: `requireUser` still hits MongoDB on
+  every request.
+- **Encrypted.** Values are sealed with AES-256-GCM (key derived from `SESSION_SECRET` with HKDF) before they
+  go to the third-party server, with the cache key as authenticated data: MemCachier holds only ciphertext, a
+  value moved under another key or altered is a miss. Changing `SESSION_SECRET` just empties the cache.
+- **Invalidation by version, kept in MongoDB.** Every write to a user's tasks (`create`, `update`, subtask toggle,
+  `delete`, clear completed, `restore`, delete forever, empty trash, delete account) ends with
+  `await invalidateUserCache(userId)`, which does `$inc: { dataVersion: 1 }` on the user. Keys embed the version, so
+  older copies become unreachable at once. The counter lives in the database (not the cache) so it survives
+  the cache being down, evicting or flushed during a write, which is exactly when a cache-side counter would leave
+  stale data behind. It is skipped when MemCachier isn't configured.
+  **A new task-write path must call `invalidateUserCache`; a new cached read must use `cachedForUser`.**
+- **Failure is invisible.** A miss, an error or a full cache means reading MongoDB. After any cache failure a
+  circuit breaker skips the cache for 30 s per server instance, so a hanging MemCachier costs one slow request
+  (about 1 s), not every request. Sets are awaited (a serverless function can be frozen once it responds).
+- **Not cached:** `GET /todos/[id]` and everything auth-related.
+- **Tested** with an in-memory `memjs` stand-in (hit/miss, every write invalidates, tenants separate, ciphertext
+  only, tamper and swap ignored, outage) and, by hand, against a real `memcached` with the real client and a real
+  browser (`memcached -p 11311 -d`, `MEMCACHIER_SERVERS=127.0.0.1:11311`). MemCachier's SASL login can't be tested
+  without an account; the options are the ones Eventra runs in production.
+
 ### 4.8 Rate limits (`server/lib/rate-limit.ts`)
 
 | Action | Limit |
@@ -530,7 +565,9 @@ tenant key, and every query filters by it.
    first person's cached tasks.
 10. **Rate limits are per tenant where there is one** (task creation is keyed by
     `userId`) and per IP before sign-in.
-11. **Isolation is tested.** `api.test.ts` has a second user try to read,
+11. **Anything cached is per tenant too** (Section 4.7b): key starts with the session's `userId`, value is
+    encrypted with the key bound in, and every write invalidates. Never cache tenant data by URL.
+12. **Isolation is tested.** `api.test.ts` has a second user try to read,
     update and delete the first user's task (all 404) and list tasks (empty);
     the browser test checks a second user sees an empty list. Any new
     tenant-owned endpoint needs the same "another user gets 404" test.
@@ -666,6 +703,7 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
 - [ ] No secrets or internal fields in responses (`toPublicUser`, `PUBLIC_FIELDS`).
 - [ ] Search input passes through `escapeRegExp`.
 - [ ] Task queries include `LIVE` or `TRASHED` (soft delete, Section 4.7).
+- [ ] Cached tenant data goes through `cachedForUser` (userId + dataVersion in the key, encrypted); every new write path calls `invalidateUserCache`.
 - [ ] Uploaded files are checked on the server by their bytes, never by the Content-Type header or file name.
 - [ ] Auth-sensitive endpoints are rate limited.
 - [ ] Redirect targets pass `safeNextPath`.
@@ -678,7 +716,7 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
 
 ## 8. Testing
 
-- `npm test` runs `src/server/test/api.test.ts` (73 tests): bloom filter
+- `npm test` runs `src/server/test/api.test.ts` (84 tests): bloom filter
   correctness, auth, sessions, forged cookies, rate limiting, profile,
   username changes, password change signing out other devices, account
   deletion, Google sign-in (create, username clash, link by email, find by id,
@@ -692,7 +730,9 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
   password), forgot / reset (generic answers, all devices signed out, weak password doesn't burn
   the link, wrong-kind tokens, per-address limit), pending email changes, the special-character
   rule, logout not touching the database, the `/api/health?check=email` diagnostics (healthy, blocked IP,
-  bad key, unverified sender, transactional off, unconfigured, unreachable, rate limit), task privacy, filters, sorting, stats, and validation.
+  bad key, unverified sender, transactional off, unconfigured, unreachable, rate limit), the memcached read cache (miss/hit, every write invalidates, per-user separation, ciphertext only,
+  tamper/swap ignored, a write during an outage never leaves stale data, outage and circuit breaker),
+  task privacy, filters, sorting, stats, and validation.
 - **Test helpers:** every `TestClient` gets its own IP (per-IP rate limits don't couple people);
   `signedIn()` registers, marks the address verified, then logs in; `beforeEach` stubs Brevo's
   HTTP API into `outbox` (`lastEmail`, `tokenOf`, `sentTo`). New code that sends mail is tested
@@ -761,6 +801,9 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
 - `axiosClient` defaults to `Content-Type: application/json`, which makes axios
   JSON-encode a `FormData`. File uploads go through `api.upload`, which sends the
   Blob as the raw body with its own type.
+- **A cache-side version counter is not enough.** A counter kept in memcached can be lost or reset (eviction,
+  flush) or be unreachable during a write, which brings stale entries back. The version lives on the user in
+  MongoDB (`dataVersion`), which `requireUser` already loads.
 - **Per-call `mutate(…, { onSuccess/onSettled })` callbacks are dropped if the component
   that called `mutate` unmounts first.** The mobile menu once closed itself before logout
   finished, so the "Logged out" toast and redirect never ran. Close/navigate *inside* the callback.
@@ -812,6 +855,8 @@ dark. The day is the hero. Completing a task feels like ticking it off with a pe
      (e.g. `Taskora <you@yourdomain.com>`). The sender must be verified in Brevo first
      (Senders, domains & dedicated IPs); see Section 4.5c for the Yahoo/Gmail caveat.
      Without both, sign-up answers 503.
+   - Optional read cache: `MEMCACHIER_SERVERS`, `MEMCACHIER_USERNAME`, `MEMCACHIER_PASSWORD` (from your
+     MemCachier cache's Analytics/Settings page, same as Eventra). `/api/health` shows `"cache": "configured"`.
    **Set `APP_URL` even without Google**: canonical links, the sitemap and share
    previews use it (Section 6b)
 5. Deploy, then open `/api/health` → `"database": "connected"` and `"email": "configured"`.
@@ -941,8 +986,14 @@ Update the status here when a milestone is finished.
 - Export tasks as CSV / JSON.
 - **Done when:** order survives reload and other devices; export opens cleanly in a spreadsheet.
 
+### ✅ Extra: MemCachier read cache
+- Per-user, encrypted, version-invalidated cache of the task list, stats and trash (Section 4.7b), in Eventra's format.
+- **Done when:** tests prove a hit skips MongoDB, every write is visible on the next read, users never share entries,
+  the cache holds only ciphertext, and a down cache changes nothing for the user. ✔
+
 ### ⬜ Milestone 13: Hardening
-- Shared rate limiting with Upstash Redis (replace the in-memory limiter).
+- Shared rate limiting (replace the in-memory limiter). MemCachier is now available for this too (counters with
+  `increment` + expiry) instead of Upstash, but `rateLimit()` is synchronous today and would become async.
 - (Later) Shared workspaces/teams — changes the tenant from user to workspace; see Section 4.9.
 - Playwright e2e suite in the repo, run in CI (GitHub Actions) on every PR.
 - **Done when:** CI blocks a PR that fails typecheck, lint, tests, build or e2e.

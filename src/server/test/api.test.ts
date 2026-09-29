@@ -3,10 +3,53 @@ import { NextRequest } from 'next/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/server/config/db', () => ({ connectDB: vi.fn(async () => undefined) }))
+
+// An in-memory stand-in for the memjs client (MemCachier). `state.fail` makes every call throw.
+const memcached = vi.hoisted(() => {
+  const store = new Map<string, string>()
+  const state = { fail: false, ops: 0 }
+  class FakeClient {
+    static create() {
+      return new FakeClient()
+    }
+    private guard() {
+      state.ops++
+      if (state.fail) throw new Error('memcached is down')
+    }
+    async get(key: string) {
+      this.guard()
+      const value = store.get(key)
+      return { value: value === undefined ? null : Buffer.from(value), flags: null }
+    }
+    async set(key: string, value: string | Buffer) {
+      this.guard()
+      store.set(key, String(value))
+      return true
+    }
+    async add(key: string, value: string | Buffer) {
+      this.guard()
+      if (store.has(key)) return false
+      store.set(key, String(value))
+      return true
+    }
+    async delete(key: string) {
+      this.guard()
+      return store.delete(key)
+    }
+    async flush() {
+      this.guard()
+      store.clear()
+      return true
+    }
+  }
+  return { store, state, FakeClient }
+})
+vi.mock('memjs', () => ({ Client: memcached.FakeClient }))
 vi.mock('@/server/models/user.model', async () => ({ default: (await import('./fake-model')).FakeUser }))
 vi.mock('@/server/models/todo.model', async () => ({ default: (await import('./fake-model')).FakeTodo }))
 
 const { connectDB } = await import('@/server/config/db')
+const { resetCacheBackoff } = await import('@/server/services/cache.service')
 const { FakeUser, FakeTodo } = await import('./fake-model')
 const { TestClient } = await import('./client')
 const { resetUsernameFilter, BloomFilter } = await import('@/server/services/username-bloom.service')
@@ -94,6 +137,10 @@ const titles = (c: InstanceType<typeof TestClient>, qs: string) =>
 beforeEach(() => {
   outbox.length = 0
   brevoCalls.length = 0
+  memcached.store.clear()
+  memcached.state.fail = false
+  memcached.state.ops = 0
+  resetCacheBackoff()
   vi.stubEnv('BREVO_API_KEY', 'test-key')
   vi.stubEnv('EMAIL_FROM', 'Taskora <sender@example.com>')
   vi.stubGlobal(
@@ -791,6 +838,227 @@ describe('email setup check (GET /api/health?check=email)', () => {
     const statuses: number[] = []
     for (let i = 0; i < 6; i++) statuses.push((await get('?check=email', same)).status)
     expect(statuses).toEqual([200, 200, 200, 200, 200, 429])
+  })
+})
+
+describe('memcached read cache (MemCachier)', () => {
+  beforeEach(() => {
+    vi.stubEnv('MEMCACHIER_SERVERS', 'mc.test:11211')
+    vi.stubEnv('MEMCACHIER_USERNAME', 'user')
+    vi.stubEnv('MEMCACHIER_PASSWORD', 'pass')
+  })
+
+  type Person = InstanceType<typeof TestClient>
+  const read = async (c: Person, path = '/api/v1/todos?today=2030-01-01') => {
+    const res = await c.raw(todos.GET, 'GET', path)
+    return { status: res.status, cache: res.headers.get('x-cache'), body: (await res.json()) as { body: any } }
+  }
+  const list = (c: Person, qs = 'today=2030-01-01') => read(c, `/api/v1/todos?${qs}`)
+  const statsOf = (c: Person, today = '2030-01-01') =>
+    c.raw(stats, 'GET', `/api/v1/todos/stats?today=${today}`).then(async r => ({ status: r.status, cache: r.headers.get('x-cache'), body: (await r.json()) as { body: any } }))
+  const trashOf = (c: Person) => c.raw(trash.GET, 'GET', '/api/v1/todos/trash').then(async r => ({ cache: r.headers.get('x-cache'), body: (await r.json()) as { body: any } }))
+  const del = (c: Person, id: string) => c.call(todoById.DELETE, 'DELETE', '/x', undefined, { id })
+  const patch = (c: Person, id: string, data: object) => c.call(todoById.PATCH, 'PATCH', '/x', data, { id })
+  const names = (r: { body: { body: any } }) => r.body.body.todos.map((t: { title: string }) => t.title)
+
+  it('is off without MEMCACHIER_SERVERS: reads MongoDB every time, no header, nothing stored', async () => {
+    vi.stubEnv('MEMCACHIER_SERVERS', '')
+    const { c } = await signedIn()
+    await add(c, { title: 'One' })
+    const find = vi.spyOn(FakeTodo, 'find')
+    const a = await list(c)
+    const b = await list(c)
+    expect(a.cache).toBeNull()
+    expect(b.cache).toBeNull()
+    expect(find).toHaveBeenCalledTimes(4) // list + stats, twice
+    expect(memcached.state.ops).toBe(0)
+    await patch(c, (await list(c)).body.body.todos[0]._id, { pinned: true })
+    expect(FakeUser.all()[0].dataVersion).toBeUndefined() // nothing to invalidate, so no extra database write
+  })
+
+  it('MISS then HIT: the same answer, without touching MongoDB', async () => {
+    const { c } = await signedIn()
+    await add(c, { title: 'Cached task', tags: ['x'] })
+    const find = vi.spyOn(FakeTodo, 'find')
+
+    const miss = await list(c)
+    expect(miss.cache).toBe('MISS')
+    const reads = find.mock.calls.length
+    const hit = await list(c)
+    expect(hit.cache).toBe('HIT')
+    expect(find.mock.calls.length).toBe(reads) // no database read on a hit
+    expect(hit.body).toEqual(miss.body) // byte-for-byte the same response body
+    expect(names(hit)).toEqual(['Cached task'])
+    expect(hit.body.body.todos[0].userId).toBeUndefined()
+  })
+
+  it('every query has its own entry, and "today" is part of it', async () => {
+    const { c } = await signedIn()
+    await add(c, { title: 'Due soon', dueDate: '2030-01-02' })
+    expect((await list(c, 'today=2030-01-01')).cache).toBe('MISS')
+    expect((await list(c, 'today=2030-01-01')).cache).toBe('HIT')
+    expect((await list(c, 'today=2030-01-02')).cache).toBe('MISS') // another day
+    expect((await list(c, 'today=2030-01-01&sort=title')).cache).toBe('MISS') // another sort
+    expect((await list(c, 'today=2030-01-01&search=' + 'x'.repeat(90))).cache).toBe('MISS') // long search text is fine
+    expect((await list(c, 'sort=title&today=2030-01-01')).cache).toBe('HIT') // parameter order doesn't matter
+    for (const key of memcached.store.keys()) expect(key.length).toBeLessThan(250) // memcached's key limit
+  })
+
+  it('every kind of write shows up on the very next read (list, stats and trash)', async () => {
+    const { c } = await signedIn()
+    const a = await add(c, { title: 'A', subtasks: [{ title: 'step' }] })
+    const b = await add(c, { title: 'B' })
+    const prime = async () => {
+      await list(c); await statsOf(c); await trashOf(c)
+      expect((await list(c)).cache).toBe('HIT')
+      expect((await statsOf(c)).cache).toBe('HIT')
+      expect((await trashOf(c)).cache).toBe('HIT')
+    }
+    const state = async () => ({ live: names(await list(c)).sort(), total: (await statsOf(c)).body.body.total, trashed: names(await trashOf(c)).sort() })
+
+    await prime(); await add(c, { title: 'C' })
+    expect(await state()).toEqual({ live: ['A', 'B', 'C'], total: 3, trashed: [] }) // create
+
+    await prime(); await patch(c, a._id, { completed: true })
+    expect((await statsOf(c)).body.body.completed).toBe(1) // update
+    expect((await list(c)).body.body.todos.find((t: { title: string }) => t.title === 'A').completed).toBe(true)
+
+    await prime(); await c.call(subtask, 'PATCH', '/x', { done: true }, { id: a._id, subtaskId: a.subtasks[0]._id })
+    expect((await list(c)).body.body.todos.find((t: { title: string }) => t.title === 'A').subtasks[0].done).toBe(true) // subtask
+
+    await prime(); await del(c, b._id)
+    expect(await state()).toEqual({ live: ['A', 'C'], total: 2, trashed: ['B'] }) // delete = to the trash
+
+    await prime(); await c.call(restore, 'POST', '/x', undefined, { id: b._id })
+    expect(await state()).toEqual({ live: ['A', 'B', 'C'], total: 3, trashed: [] }) // restore
+
+    await prime(); await c.call(completed, 'DELETE', '/api/v1/todos/completed')
+    expect(await state()).toEqual({ live: ['B', 'C'], total: 2, trashed: ['A'] }) // clear completed
+
+    await prime(); await c.call(forever, 'DELETE', '/x', undefined, { id: a._id })
+    expect(await state()).toEqual({ live: ['B', 'C'], total: 2, trashed: [] }) // delete forever
+
+    await del(c, b._id); await prime(); await c.call(trash.DELETE, 'DELETE', '/api/v1/todos/trash')
+    expect(await state()).toEqual({ live: ['C'], total: 1, trashed: [] }) // empty trash
+  })
+
+  it('one person never receives another’s cached data, and the cache holds only ciphertext', async () => {
+    const a = await signedIn()
+    const b = await signedIn()
+    await add(a.c, { title: 'Secret plan of A', notes: 'confidential notes' })
+    expect(names(await list(a.c))).toEqual(['Secret plan of A'])
+    expect((await list(a.c)).cache).toBe('HIT')
+
+    const forB = await list(b.c) // same query, different person
+    expect(forB.cache).toBe('MISS')
+    expect(names(forB)).toEqual([])
+    expect((await statsOf(b.c)).body.body.total).toBe(0)
+
+    // Keys are namespaced by the user id from the session; values are unreadable.
+    const keys = [...memcached.store.keys()]
+    expect(keys.filter(k => k.includes(a.user._id))).toHaveLength(1) // A's list
+    expect(keys.filter(k => k.includes(b.user._id))).toHaveLength(2) // B's list and stats
+    expect(keys.every(k => k.startsWith(`tk:v1:u:${a.user._id}:`) || k.startsWith(`tk:v1:u:${b.user._id}:`))).toBe(true)
+    // Neither the stored text nor what it decodes to may contain the tasks (base64 alone would hide them from a plain search).
+    for (const stored of memcached.store.values()) {
+      for (const view of [stored, Buffer.from(stored, 'base64').toString('utf8'), Buffer.from(stored, 'base64').toString('latin1')]) {
+        expect(view).not.toContain('Secret plan')
+        expect(view).not.toContain('confidential')
+        expect(view).not.toContain('todos')
+      }
+    }
+  })
+
+  it('a value copied under someone else’s key, or altered, is ignored', async () => {
+    const a = await signedIn()
+    const b = await signedIn()
+    await add(a.c, { title: 'Only for A' })
+    await list(a.c)
+    const keyA = [...memcached.store.keys()].find(k => k.includes(a.user._id) && k.includes(':list:'))!
+    await list(b.c)
+    const keyB = [...memcached.store.keys()].find(k => k.includes(b.user._id) && k.includes(':list:'))!
+
+    // An attacker with write access to the cache swaps A's entry into B's slot.
+    memcached.store.set(keyB, memcached.store.get(keyA)!)
+    const swapped = await list(b.c)
+    expect(swapped.cache).toBe('MISS')
+    expect(names(swapped)).toEqual([]) // B still sees only B's own data
+
+    // Flipping a character (or truncating) makes it unreadable, and it heals itself.
+    const good = memcached.store.get(keyA)!
+    memcached.store.set(keyA, good.slice(0, 40) + (good[40] === 'A' ? 'B' : 'A') + good.slice(41))
+    expect((await list(a.c)).cache).toBe('MISS')
+    memcached.store.set(keyA, 'not-base64-at-all!!')
+    expect(names(await list(a.c))).toEqual(['Only for A'])
+    expect((await list(a.c)).cache).toBe('HIT')
+  })
+
+  it('the version lives in MongoDB: each write bumps it, it is never exposed, and nothing version-like is kept in the cache', async () => {
+    const { c, user } = await signedIn()
+    expect(FakeUser.all()[0].dataVersion ?? 0).toBe(0)
+    const t = await add(c, { title: 'One' })
+    await patch(c, t._id, { pinned: true })
+    await del(c, t._id)
+    expect(FakeUser.all()[0].dataVersion).toBe(3)
+    const me_ = (await c.call(me, 'GET', '/api/v1/auth/me')).json.body
+    expect(me_.dataVersion).toBeUndefined()
+    expect(me_._id).toBe(user._id)
+    await list(c)
+    expect([...memcached.store.keys()].every(k => k.includes(':v3:'))).toBe(true) // entries are stored under the current version
+  })
+
+  it('a write made while the cache is down is never followed by stale data', async () => {
+    const { c } = await signedIn()
+    await add(c, { title: 'Before' })
+    expect((await list(c)).cache).toBe('MISS')
+    expect((await list(c)).cache).toBe('HIT') // an entry now sits in the cache
+
+    memcached.state.fail = true
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    await add(c, { title: 'During the outage' }) // the cache can't be told anything; MongoDB still records the new version
+    memcached.state.fail = false
+    resetCacheBackoff() // the cache is back
+
+    const after = await list(c)
+    expect(after.cache).toBe('MISS') // the old entry is unreachable
+    expect(names(after).sort()).toEqual(['Before', 'During the outage'])
+    expect((await statsOf(c)).body.body.total).toBe(2)
+  })
+
+  it('when MemCachier is down, everything still works', async () => {
+    const { c } = await signedIn()
+    await add(c, { title: 'Works anyway' })
+    await list(c)
+    memcached.state.fail = true
+    const error = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const down = await list(c)
+    expect(down.status).toBe(200)
+    expect(names(down)).toEqual(['Works anyway'])
+    expect((await add(c, { title: 'Written while down' })).title).toBe('Written while down') // writes don't fail either
+    expect(names(await list(c)).sort()).toEqual(['Works anyway', 'Written while down'])
+    expect(error).toHaveBeenCalledTimes(1) // logged once, then skipped for a while (circuit breaker)
+    const opsWhileDown = memcached.state.ops
+    await list(c)
+    expect(memcached.state.ops).toBe(opsWhileDown) // not even trying
+
+    memcached.state.fail = false
+    resetCacheBackoff()
+    expect(names(await list(c)).sort()).toEqual(['Works anyway', 'Written while down'])
+  })
+
+  it('never serves anything to someone who is not logged in', async () => {
+    const before = memcached.state.ops
+    expect((await list(new TestClient())).status).toBe(401)
+    expect((await trashOf(new TestClient())).body).toMatchObject({ success: false })
+    expect(memcached.state.ops).toBe(before)
+  })
+
+  it('/api/health says whether the cache is configured', async () => {
+    const res = await new TestClient().call(health as never, 'GET', '/api/health')
+    expect((res.json as unknown as { cache: string }).cache).toBe('configured')
+    vi.stubEnv('MEMCACHIER_SERVERS', '')
+    const off = await new TestClient().call(health as never, 'GET', '/api/health')
+    expect((off.json as unknown as { cache: string }).cache).toBe('not configured')
   })
 })
 

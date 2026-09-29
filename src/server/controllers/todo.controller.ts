@@ -6,6 +6,7 @@ import { TODO_CATEGORIES, TODO_PRIORITIES, type TodoPriority } from '@/constants
 import { HttpError, ok, parseBody, parseQuery } from '@/server/lib/http'
 import { requireUser } from '@/server/lib/auth'
 import { LIMITS, rateLimit } from '@/server/lib/rate-limit'
+import { cachedForUser, invalidateUserCache, withCacheHeader } from '@/server/services/user-cache.service'
 import { addDays, escapeRegExp, isValidObjectId, utcToday } from '@/server/lib/helpers'
 import { createTodoBody, listTodosQuery, statsQuery, toggleSubtaskBody, updateTodoBody, type ListTodosQuery } from '@/lib/validation'
 
@@ -107,9 +108,8 @@ const loadStats = async (userId: string, today: string) => {
   return buildStats(all, today)
 }
 
-export async function listTodos(req: NextRequest) {
-  const { userId } = await requireUser(req)
-  const { status, priority, category, tag, due, search, sort, today = utcToday() } = parseQuery(req, listTodosQuery)
+async function loadList(userId: string, query: ListTodosQuery, today: string) {
+  const { status, priority, category, tag, due, search, sort } = query
 
   const filter: Record<string, unknown> = { userId, ...LIVE }
   if (status === 'active') filter.completed = false
@@ -138,13 +138,24 @@ export async function listTodos(req: NextRequest) {
     loadStats(userId, today),
   ])
 
-  return ok('Todos fetched', { todos: sortTodos(todos, sort), stats })
+  return { todos: sortTodos(todos, sort), stats }
+}
+
+export async function listTodos(req: NextRequest) {
+  const { userId, user } = await requireUser(req)
+  const query = parseQuery(req, listTodosQuery)
+  const today = query.today ?? utcToday()
+
+  // Cached per user and per exact query (`today` included: due filters and stats depend on it).
+  const { value, cache } = await cachedForUser(userId, user.dataVersion, 'list', { ...query, today }, () => loadList(userId, query, today))
+  return withCacheHeader(ok('Todos fetched', value), cache)
 }
 
 export async function getStats(req: NextRequest) {
-  const { userId } = await requireUser(req)
+  const { userId, user } = await requireUser(req)
   const { today = utcToday() } = parseQuery(req, statsQuery)
-  return ok('Stats fetched', await loadStats(userId, today))
+  const { value, cache } = await cachedForUser(userId, user.dataVersion, 'stats', { today }, () => loadStats(userId, today))
+  return withCacheHeader(ok('Stats fetched', value), cache)
 }
 
 export async function getTodo(req: NextRequest, id: string) {
@@ -162,6 +173,7 @@ export async function createTodo(req: NextRequest) {
   const input = await parseBody(req, createTodoBody)
 
   const todo = await Todo.create({ ...input, subtasks: withSubtaskIds(input.subtasks), userId })
+  await invalidateUserCache(userId)
   const { userId: _u, __v: _v, ...body } = todo.toObject() as unknown as Record<string, unknown>
   return ok('Task added', body, 201)
 }
@@ -178,6 +190,7 @@ export async function updateTodo(req: NextRequest, id: string) {
 
   const todo = await Todo.findOneAndUpdate({ _id: id, userId, ...LIVE }, { $set: set }, { new: true, runValidators: true }).select(PUBLIC_FIELDS).lean()
   if (!todo) throw new HttpError(404, 'Task not found')
+  await invalidateUserCache(userId)
   return ok('Task updated', todo)
 }
 
@@ -193,6 +206,7 @@ export async function toggleSubtask(req: NextRequest, id: string, subtaskId: str
 
   const subtasks = todo.subtasks.map(s => (String(s._id) === subtaskId ? { ...s, done } : s))
   const updated = await Todo.findOneAndUpdate({ _id: id, userId, ...LIVE }, { $set: { subtasks } }, { new: true }).select(PUBLIC_FIELDS).lean()
+  await invalidateUserCache(userId)
   return ok('Subtask updated', updated)
 }
 
@@ -202,6 +216,7 @@ export async function deleteTodo(req: NextRequest, id: string) {
   requireId(id)
   const todo = await Todo.findOneAndUpdate({ _id: id, userId, ...LIVE }, { $set: { deletedAt: new Date() } }).select('_id').lean()
   if (!todo) throw new HttpError(404, 'Task not found')
+  await invalidateUserCache(userId)
   return ok('Task moved to trash', { _id: id })
 }
 
@@ -209,14 +224,17 @@ export async function deleteTodo(req: NextRequest, id: string) {
 export async function clearCompleted(req: NextRequest) {
   const { userId } = await requireUser(req)
   const { modifiedCount } = await Todo.updateMany({ userId, completed: true, ...LIVE }, { $set: { deletedAt: new Date() } })
+  await invalidateUserCache(userId)
   return ok(modifiedCount === 1 ? 'Moved 1 completed task to trash' : `Moved ${modifiedCount} completed tasks to trash`, { deletedCount: modifiedCount })
 }
 
 /** GET /todos/trash — this user's trashed tasks, most recently deleted first. */
 export async function listTrash(req: NextRequest) {
-  const { userId } = await requireUser(req)
-  const todos = await Todo.find({ userId, ...TRASHED }).sort({ deletedAt: -1 }).limit(MAX_TODOS).select(PUBLIC_FIELDS).lean<TodoDoc[]>()
-  return ok('Trash fetched', { todos })
+  const { userId, user } = await requireUser(req)
+  const { value, cache } = await cachedForUser(userId, user.dataVersion, 'trash', {}, async () => ({
+    todos: await Todo.find({ userId, ...TRASHED }).sort({ deletedAt: -1 }).limit(MAX_TODOS).select(PUBLIC_FIELDS).lean<TodoDoc[]>(),
+  }))
+  return withCacheHeader(ok('Trash fetched', value), cache)
 }
 
 /** POST /todos/[id]/restore — back to the list exactly as it was. */
@@ -225,6 +243,7 @@ export async function restoreTodo(req: NextRequest, id: string) {
   requireId(id)
   const todo = await Todo.findOneAndUpdate({ _id: id, userId, ...TRASHED }, { $set: { deletedAt: null } }, { new: true }).select(PUBLIC_FIELDS).lean()
   if (!todo) throw new HttpError(404, 'Task not found in trash')
+  await invalidateUserCache(userId)
   return ok('Task restored', todo)
 }
 
@@ -234,6 +253,7 @@ export async function deleteTodoForever(req: NextRequest, id: string) {
   requireId(id)
   const todo = await Todo.findOneAndDelete({ _id: id, userId, ...TRASHED }).select('_id').lean()
   if (!todo) throw new HttpError(404, 'Task not found in trash')
+  await invalidateUserCache(userId)
   return ok('Task deleted forever', { _id: id })
 }
 
@@ -241,5 +261,6 @@ export async function deleteTodoForever(req: NextRequest, id: string) {
 export async function emptyTrash(req: NextRequest) {
   const { userId } = await requireUser(req)
   const { deletedCount } = await Todo.deleteMany({ userId, ...TRASHED })
+  await invalidateUserCache(userId)
   return ok(deletedCount === 1 ? 'Deleted 1 task forever' : `Deleted ${deletedCount} tasks forever`, { deletedCount })
 }

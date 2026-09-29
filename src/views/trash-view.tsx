@@ -27,7 +27,7 @@ function TrashItem({ todo }: { todo: Todo }) {
   return (
     <li className="flex flex-col gap-3 px-4 py-3.5 sm:flex-row sm:items-center">
       <div className="min-w-0 flex-1">
-        <p className={cn('text-[15px] leading-snug font-medium break-words', todo.completed && 'text-muted-foreground line-through')}>{todo.title}</p>
+        <p className={cn('text-[15px] leading-snug font-medium wrap-break-word', todo.completed && 'text-muted-foreground line-through')}>{todo.title}</p>
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1 font-medium">
             <CategoryIcon className="size-3.5" aria-hidden />

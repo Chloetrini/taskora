@@ -32,6 +32,7 @@ export function toPublicUser(user: object) {
   const {
     password,
     sessionVersion: _v,
+    dataVersion: _d,
     __v: _x,
     googleId,
     avatar: _a,

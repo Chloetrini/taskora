@@ -9,6 +9,7 @@ import { clearSessionCookie, readSession, setSessionCookie } from '@/server/lib/
 import { requireUser, toPublicUser } from '@/server/lib/auth'
 import { assertEmailReady } from '@/server/services/email.service'
 import { issueVerificationEmail } from '@/server/services/account-email.service'
+import { invalidateUserCache } from '@/server/services/user-cache.service'
 import { clientIp, LIMITS, rateLimit } from '@/server/lib/rate-limit'
 import { changePasswordBody, deleteAccountBody, updateProfileBody, usernameField, usernameQuery } from '@/lib/validation'
 import { BCRYPT_COST } from './auth.controller'
@@ -120,6 +121,7 @@ export async function deleteAccount(req: NextRequest) {
 
   await Todo.deleteMany({ userId })
   await User.deleteOne({ _id: userId })
+  await invalidateUserCache(userId)
 
   const res = ok('Account deleted')
   clearSessionCookie(res)

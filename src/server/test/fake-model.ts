@@ -96,9 +96,12 @@ export function createFakeModel(options: { defaults: () => Doc; hidden?: string[
         return doc ?? null
       }),
     findByIdAndUpdate: (id: unknown, update: { $set: Doc }) => Model.findOneAndUpdate({ _id: id }, update),
-    updateOne: async (filter: Doc, update: { $set: Doc }) => {
+    updateOne: async (filter: Doc, update: { $set?: Doc; $inc?: Doc }) => {
       const doc = store.find(d => matches(d, filter))
-      if (doc) Object.assign(doc, update.$set)
+      if (doc) {
+        Object.assign(doc, update.$set)
+        for (const [field, by] of Object.entries(update.$inc ?? {})) doc[field] = (doc[field] ?? 0) + (by as number)
+      }
       return { modifiedCount: doc ? 1 : 0 }
     },
     updateMany: async (filter: Doc, update: { $set: Doc }) => {

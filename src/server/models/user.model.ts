@@ -28,6 +28,10 @@ export interface IUser {
   // Bumped on password change; sessions carrying an older version are
   // rejected, which signs the user out everywhere else.
   sessionVersion: number
+  // Bumped on every write to the user's tasks. Cached task lists embed it in
+  // their key, so a write makes every older cached copy unreachable (see
+  // services/user-cache.service.ts). Old accounts have none: treated as 0.
+  dataVersion?: number
   createdAt: Date
   updatedAt: Date
 }
@@ -51,6 +55,7 @@ const userSchema = new Schema<IUser>(
     googleId: { type: String, unique: true, sparse: true, select: false },
     bio: { type: String, trim: true, maxlength: 160, default: '' },
     sessionVersion: { type: Number, default: 0, select: false },
+    dataVersion: { type: Number, default: 0 },
     avatar: { type: new Schema({ data: Buffer, contentType: String }, { _id: false }), select: false, default: null },
     avatarUpdatedAt: { type: Date, default: null },
   },

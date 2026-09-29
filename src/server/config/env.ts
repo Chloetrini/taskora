@@ -49,6 +49,15 @@ export function emailEnv() {
   return apiKey && from ? { apiKey, from } : null
 }
 
+/**
+ * MemCachier (memcached) is optional, same variables as Eventra. Without
+ * MEMCACHIER_SERVERS nothing is cached and every read goes to MongoDB.
+ */
+export function memcachierEnv() {
+  const servers = process.env.MEMCACHIER_SERVERS?.trim()
+  return servers ? { servers, username: process.env.MEMCACHIER_USERNAME, password: process.env.MEMCACHIER_PASSWORD } : null
+}
+
 export function env() {
   if (cached) return cached
   const SESSION_SECRET = required('SESSION_SECRET')
