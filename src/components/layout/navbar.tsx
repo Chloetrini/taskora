@@ -5,11 +5,9 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { Menu, Moon, Plus, Sun, X } from 'lucide-react'
 import { Button, buttonVariants } from '@/components/ui/button'
-import UserMenu from '@/components/layout/user-menu'
 import MobileMenu from '@/components/layout/mobile-menu'
 import { NavLink } from '@/components/layout/nav-link'
 import { useTheme } from '@/context/theme-context'
-import { useMe } from '@/hooks/auth/use-auth'
 import { useDismiss } from '@/hooks/shared/use-dismiss'
 import { SITE } from '@/constants/site'
 import { cn } from '@/lib/utils'
@@ -40,7 +38,6 @@ function ThemeToggle() {
 }
 
 export default function Navbar() {
-  const { data: user } = useMe()
   const pathname = usePathname()
   // The menu remembers which page it was opened on, so navigating closes it
   // without a setState-in-effect.
@@ -70,48 +67,24 @@ export default function Navbar() {
           <div className="flex items-center gap-6">
             <Logo />
             <nav aria-label="Main" className="hidden items-center gap-1 md:flex">
-              {user ? (
-                <>
-                  <NavLink href="/dashboard">Dashboard</NavLink>
-                  <NavLink href="/tasks" exact>
-                    All tasks
-                  </NavLink>
-                  <NavLink href="/trash">Trash</NavLink>
-                </>
-              ) : (
-                <Link href="/#features" className="rounded-md px-3 py-2 text-sm font-medium text-muted-foreground hover:text-foreground">
-                  Features
-                </Link>
-              )}
+              <NavLink href="/dashboard">Dashboard</NavLink>
+              <NavLink href="/tasks" exact>
+                All tasks
+              </NavLink>
+              <NavLink href="/trash">Trash</NavLink>
             </nav>
           </div>
 
           <div className="flex items-center gap-1.5">
             <ThemeToggle />
-            {user ? (
-              <>
-                <Link href="/tasks/new" className={cn(buttonVariants({ size: 'sm' }), 'hidden h-9 sm:inline-flex')}>
-                  <Plus /> New task
-                </Link>
-                <div className="ml-1 hidden md:block">
-                  <UserMenu user={user} />
-                </div>
-              </>
-            ) : (
-              <div className="hidden items-center gap-1.5 sm:flex">
-                <Link href="/login" className={buttonVariants({ variant: 'ghost', size: 'sm' })}>
-                  Log in
-                </Link>
-                <Link href="/register" className={cn(buttonVariants({ size: 'sm' }), 'h-9')}>
-                  Get started
-                </Link>
-              </div>
-            )}
+            <Link href="/tasks/new" className={cn(buttonVariants({ size: 'sm' }), 'hidden h-9 sm:inline-flex')}>
+              <Plus /> New task
+            </Link>
             <Button
               ref={toggleRef}
               variant="ghost"
               size="icon"
-              className={cn(user ? 'md:hidden' : 'sm:hidden')}
+              className="md:hidden"
               onClick={() => setOpenOn(menuOpen ? null : pathname)}
               aria-expanded={menuOpen}
               aria-controls="mobile-menu"
@@ -122,7 +95,7 @@ export default function Navbar() {
           </div>
         </div>
       </header>
-      {menuOpen && <MobileMenu user={user} onClose={() => setOpenOn(null)} panelRef={panelRef} />}
+      {menuOpen && <MobileMenu onClose={() => setOpenOn(null)} panelRef={panelRef} />}
     </>
   )
 }

@@ -8,7 +8,7 @@ import TodoList from '@/components/todos/todo-list'
 import QuickAdd from '@/components/todos/quick-add'
 import TodosSkeleton from '@/components/skeletons/todos-skeleton'
 import { CATEGORIES, CATEGORY_META } from '@/constants/todo'
-import { useCurrentUser } from '@/components/guards/require-auth'
+import SampleDataControls from '@/components/todos/sample-data-controls'
 import { useTodos, useTodoStats } from '@/hooks/todos/use-todos'
 import { greeting } from '@/lib/utils'
 import type { TodoFilters } from '@/types/todo'
@@ -41,7 +41,6 @@ function Section({ title, to, children }: { title: string; to: string; children:
 }
 
 export default function DashboardView() {
-  const user = useCurrentUser()
   const stats = useTodoStats()
   const dueToday = useTodos(DUE_TODAY)
   const overdue = useTodos(OVERDUE)
@@ -50,7 +49,6 @@ export default function DashboardView() {
   // Everything else still to do, minus what's already shown above it.
   const shownIds = new Set([...(overdue.data?.todos ?? []), ...(dueToday.data?.todos ?? [])].map(t => t._id))
   const upNext = (allActive.data?.todos ?? []).filter(t => !shownIds.has(t._id)).slice(0, 6)
-  const firstName = user.fullName.split(' ')[0]
 
   const maxCategory = s ? Math.max(1, ...CATEGORIES.map(c => s.byCategory[c] ?? 0)) : 1
 
@@ -60,8 +58,11 @@ export default function DashboardView() {
       <h1 className="font-display text-[clamp(2.75rem,11vw,4.5rem)] leading-[0.95] font-extrabold tracking-[-0.035em]">{format(new Date(), 'EEEE')}</h1>
       <p className="mt-2 font-display text-xl font-medium tracking-tight text-muted-foreground sm:text-2xl">{format(new Date(), 'd MMMM yyyy')}</p>
       <p className="mt-4 text-[15px]">
-        {greeting()}, <span className="font-semibold">{firstName}</span>.
+        {greeting()}.
       </p>
+      <div className="mt-4">
+        <SampleDataControls />
+      </div>
 
       <div className="mt-8">
         <div className="flex items-baseline justify-between text-sm">

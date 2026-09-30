@@ -4,7 +4,7 @@ import { SITE } from '@/constants/site'
 import { siteUrl } from '@/lib/site-url'
 
 // The landing page has its own title (no "| Taskora" suffix) and description.
-const LANDING_TITLE = `${SITE.name}: a private to-do list with subtasks and filters`
+const LANDING_TITLE = `${SITE.name}: a free to-do list with subtasks and filters`
 export const metadata: Metadata = {
   title: { absolute: LANDING_TITLE },
   description: SITE.description,

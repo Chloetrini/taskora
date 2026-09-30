@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'react-toastify'
-import { clearCompletedTodos, createTodo, deleteTodo, deleteTodoForever, emptyTrash, restoreTodo, toggleSubtask, updateTodo, type TodosListBody } from '@/api/todos'
+import { clearAllData, clearCompletedTodos, loadSampleData, createTodo, deleteTodo, deleteTodoForever, emptyTrash, restoreTodo, toggleSubtask, updateTodo, type TodosListBody } from '@/api/todos'
 import type { ApiResponse } from '@/api/client'
 import type { Todo, TodoInput, UpdateTodoInput } from '@/types/todo'
 import { todoKeys } from '@/hooks/todos/use-todos'
@@ -207,6 +207,28 @@ export const useEmptyTrash = () => {
     onError: (error: Error, _vars, snapshot) => {
       rollback(snapshot)
       toast.error(error.message)
+    },
+    onSettled: settle,
+  })
+}
+
+export const useLoadSampleData = () => {
+  const { settle } = useOptimisticLists()
+  return useMutation({
+    mutationFn: loadSampleData,
+    onSuccess: res => {
+      toast.success(res.message)
+    },
+    onSettled: settle,
+  })
+}
+
+export const useClearAllData = () => {
+  const { settle } = useOptimisticLists()
+  return useMutation({
+    mutationFn: clearAllData,
+    onSuccess: res => {
+      toast.success(res.message)
     },
     onSettled: settle,
   })

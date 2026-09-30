@@ -6,6 +6,7 @@ import PageWrapper from '@/components/layout/page-wrapper'
 import QuickAdd from '@/components/todos/quick-add'
 import TodoToolbar from '@/components/todos/todo-toolbar'
 import TodoGrid from '@/components/todos/todo-grid'
+import SampleDataControls from '@/components/todos/sample-data-controls'
 import TodoEmptyState from '@/components/todos/todo-empty-state'
 import TodosSkeleton from '@/components/skeletons/todos-skeleton'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -33,6 +34,7 @@ export default function TasksView() {
       </div>
 
       <div className="mt-6 grid gap-4">
+        <SampleDataControls />
         <QuickAdd />
         {/* key: remount when filters are cleared so the local search box resets */}
         <TodoToolbar
