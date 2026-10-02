@@ -889,6 +889,12 @@ Changing `SESSION_SECRET` signs everyone out (old cookies can't be unsealed) —
 
 ---
 
+## 11b. Commits
+
+Author every commit as `Chloetrini <trinityegbukwu1@gmail.com>`, never as "Claude" or "Claude with Trini". Set it before committing: `git config user.name "Chloetrini" && git config user.email trinityegbukwu1@gmail.com`.
+
+---
+
 ## 12. Milestones
 
 Work top to bottom. Each milestone ends with typecheck, lint, test and build
